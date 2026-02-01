@@ -7,9 +7,21 @@ $logFileName = "$($scriptName).log"
 
 # ---------------------------[ Configuration ]---------------------------
 $ErrorActionPreference = 'Stop'
+
+$enableGroupCreation   = $true
+$groupNamingAppSuffix  = $true
+$groupCreationBlacklist = @('Microsoft Visual C++*', 
+                            'Microsoft ODBC Driver*',
+                            'Microsoft .NET Runtime*'
+                            'Microsoft .NET Windows Desktop Runtime*',
+                            'Microsoft ASP.NET Core Hosting Bundle',
+                            'Microsoft ASP.NET Core Runtime',
+                            '7-Zip')
+
 $graphBaseUrl          = "https://graph.microsoft.com/beta"
-$graphScope            = "DeviceManagementApps.ReadWrite.All"
+$graphScopes           = @('DeviceManagementApps.ReadWrite.All', 'Group.ReadWrite.All')
 $minWindowsRelease     = "21H1"
+$groupNamingAppSuffix  = $true
 $installCommandLine    = "%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\install.ps1"
 $uninstallCommandLine  = "%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\uninstall.ps1"
 $chunkSizeBytes        = 1024l * 1024l * 6l
@@ -118,6 +130,26 @@ function Test-GraphModulesInstalled {
     return $true
 }
 
+function Test-GraphScopes {
+    param([object]$GraphContext)
+    if (-not $GraphContext) { return $false }
+    $currentScopes = @()
+    if ($GraphContext.Scopes) {
+        if ($GraphContext.Scopes -is [array]) {
+            $currentScopes = $GraphContext.Scopes
+        } else {
+            $currentScopes = @($GraphContext.Scopes -split '\s+')
+        }
+    }
+    foreach ($required in $graphScopes) {
+        if ($currentScopes -notcontains $required) {
+            Write-Log "Scope missing: $required (re-auth required)" -Tag "Debug"
+            return $false
+        }
+    }
+    return $true
+}
+
 function Initialize-GraphConnection {
     Test-GraphModulesInstalled | Out-Null
     if (-not (Get-Module 'Microsoft.Graph.Authentication' -ErrorAction SilentlyContinue)) {
@@ -130,13 +162,17 @@ function Initialize-GraphConnection {
     } catch {
         Write-Log "No existing Graph context." -Tag "Debug"
     }
-    if ($graphContext -and $graphContext.Account) {
+    if ($graphContext -and $graphContext.Account -and (Test-GraphScopes -GraphContext $graphContext)) {
         $tenantInfo = if ($graphContext.TenantId) { " | TenantId: $($graphContext.TenantId)" } else { '' }
         Write-Log "Graph already connected: $($graphContext.Account)$tenantInfo" -Tag "Success"
         return
     }
+    if ($graphContext -and -not (Test-GraphScopes -GraphContext $graphContext)) {
+        Write-Log "Re-authenticating to grant required scopes..." -Tag "Run"
+        Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
+    }
     Write-Log "Connecting to Graph..." -Tag "Run"
-    Connect-MgGraph -Scopes $graphScope -NoWelcome -ErrorAction Stop
+    Connect-MgGraph -Scopes $graphScopes -NoWelcome -ErrorAction Stop
     $graphContext = Get-MgContext -ErrorAction SilentlyContinue
     $tenantInfo = if ($graphContext -and $graphContext.TenantId) { " | TenantId: $($graphContext.TenantId)" } else { '' }
     Write-Log "Connected: $($graphContext.Account)$tenantInfo" -Tag "Success"
@@ -311,6 +347,88 @@ function New-Win32LobAppBody {
     return $body
 }
 
+# ---------------------------[ Group creation ]---------------------------
+function Get-ResolvedGroupNames {
+    param([string]$AppName)
+    if ($groupNamingAppSuffix) {
+        return @{ RQ = "Win - SW - RQ - $AppName"; AV = "Win - SW - AV - $AppName" }
+    }
+    return @{ RQ = "Win - SW - $AppName - RQ"; AV = "Win - SW - $AppName - AV" }
+}
+
+function Test-AppGroupBlacklisted {
+    param([string]$DisplayName)
+    foreach ($pattern in $groupCreationBlacklist) {
+        if ($DisplayName -like $pattern) { return $true }
+    }
+    return $false
+}
+
+function Get-SafeMailNickname {
+    param([string]$DisplayName)
+    $safe = ($DisplayName -replace '[^a-zA-Z0-9]', '')
+    if ([string]::IsNullOrWhiteSpace($safe)) { $safe = 'Group' }
+    return $safe.Substring(0, [Math]::Min(56, $safe.Length))
+}
+
+function Get-OrCreateGroup {
+    param([string]$DisplayName)
+    $escaped = $DisplayName -replace "'", "''"
+    $filter = [uri]::EscapeDataString("displayName eq '$escaped'")
+    $existing = Invoke-GraphApi -Method Get -Resource "/groups?`$filter=$filter&`$top=1&`$select=id,displayName"
+    if ($existing.value -and $existing.value.Count -gt 0) {
+        Write-Log "Group exists: $DisplayName" -Tag "Get"
+        return $existing.value[0].id
+    }
+    $mailNick = (Get-SafeMailNickname -DisplayName $DisplayName) + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $groupBody = @{
+        displayName     = $DisplayName
+        description     = "Intune app assignment group: $DisplayName"
+        mailEnabled     = $false
+        mailNickname    = $mailNick
+        securityEnabled = $true
+        groupTypes      = @()
+    }
+    Write-Log "Creating group: $DisplayName" -Tag "Run"
+    $created = Invoke-GraphApi -Method Post -Resource '/groups' -Body $groupBody
+    Write-Log "Created group: $DisplayName (id: $($created.id))" -Tag "Debug"
+    return $created.id
+}
+
+function Set-AppGroupAssignments {
+    param([string]$AppId, [string]$DisplayName)
+    $groupNames = Get-ResolvedGroupNames -AppName $DisplayName
+    $rqGroupId = Get-OrCreateGroup -DisplayName $groupNames.RQ
+    $avGroupId = Get-OrCreateGroup -DisplayName $groupNames.AV
+    $assignments = @(
+        @{
+            '@odata.type' = '#microsoft.graph.mobileAppAssignment'
+            target        = @{
+                '@odata.type' = '#microsoft.graph.groupAssignmentTarget'
+                groupId       = $rqGroupId
+            }
+            intent        = 'required'
+            settings      = @{
+                '@odata.type'  = '#microsoft.graph.win32LobAppAssignmentSettings'
+                notifications  = 'hideAll'
+            }
+        }
+        @{
+            '@odata.type' = '#microsoft.graph.mobileAppAssignment'
+            target        = @{
+                '@odata.type' = '#microsoft.graph.groupAssignmentTarget'
+                groupId       = $avGroupId
+            }
+            intent        = 'available'
+            settings      = @{ '@odata.type' = '#microsoft.graph.win32LobAppAssignmentSettings' }
+        }
+    )
+    $assignBody = @{ mobileAppAssignments = $assignments }
+    Invoke-GraphApi -Method Post -Resource "/deviceAppManagement/mobileApps/$AppId/assign" -Body $assignBody
+    Write-Log "Assigned app to groups: RQ=$($groupNames.RQ), AV=$($groupNames.AV)" -Tag "Debug"
+    Write-Log "Assigned groups to app" -Tag "Success"
+}
+
 # ---------------------------[ Check if app exists ]---------------------------
 function Test-AppExists {
     param([string]$DisplayName)
@@ -398,6 +516,9 @@ function Deploy-Win32App {
 
     Write-Log "Processing: $displayName" -Tag "Info"
     $iconBase64 = Get-IconBase64 -AppName $AppName -IconsFolder $iconsRoot
+    if (-not $iconBase64) {
+        Write-Log "No icon file retrieved for: $displayName" -Tag "Info"
+    }
     $detectionRule = Get-DetectionRuleFromScript -ScriptPath $detectionPath
     $winMetadata = Get-IntuneWinMetadata -IntuneWinPath $intunewinPath
 
@@ -496,6 +617,17 @@ function Deploy-Win32App {
         }
 
         Write-Log "Deployed: $displayName (id: $appId)" -Tag "Success"
+
+        if ($enableGroupCreation -and -not (Test-AppGroupBlacklisted -DisplayName $displayName)) {
+            try {
+                Set-AppGroupAssignments -AppId $appId -DisplayName $displayName
+            } catch {
+                Write-Log "Group creation/assignment failed (non-fatal): $_" -Tag "Error"
+            }
+        } elseif ($enableGroupCreation -and (Test-AppGroupBlacklisted -DisplayName $displayName)) {
+            Write-Log "Skipping group creation (app on blacklist): $displayName" -Tag "Info"
+        }
+
         return $true
     } catch {
         Write-Log "Deploy failed for $displayName : $_" -Tag "Error"
@@ -510,7 +642,7 @@ function Deploy-Win32App {
 # ---------------------------[ Script Start ]---------------------------
 Write-Log "======== Script Started ========" -Tag "Start"
 Write-Log "ComputerName: $env:COMPUTERNAME | User: $env:USERNAME | Script: $scriptName" -Tag "Info"
-Write-Log "Config: graphBaseUrl=$graphBaseUrl | appsRoot=$appsRoot" -Tag "Debug"
+Write-Log "Config: graphBaseUrl=$graphBaseUrl | appsRoot=$appsRoot | enableGroupCreation=$enableGroupCreation | groupNamingAppSuffix=$groupNamingAppSuffix" -Tag "Debug"
 
 if (-not (Test-Path -LiteralPath $appsRoot)) {
     Write-Log "Apps folder not found. Run package.ps1 first." -Tag "Error"
