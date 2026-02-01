@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "source": "winget-cli Localization/Resources - https://github.com/microsoft/winget-cli",
+  "description": "Maps localized winget show output to English. Used when system locale is not en-US.",
+  "english": {
+    "foundWord": "Found",
+    "labels": {
+      "Publisher": "Publisher",
+      "Description": "Description",
+      "Homepage": "Homepage",
+      "Publisher Url": "Publisher Url",
+      "Privacy Url": "Privacy Url",
+      "Installer": "Installer"
+    },
+    "noPackageSubstrings": ["No package found", "No applicable package", "No applicable installer"]
+  },
+  "locales": {
+    "de-DE": {
+      "foundWord": "Gefunden",
+      "labels": {
+        "Herausgeber": "Publisher",
+        "Beschreibung": "Description",
+        "Startseite": "Homepage",
+        "Herausgeber-URL": "Publisher Url",
+        "Datenschutz-URL": "Privacy Url",
+        "Installationsprogramm": "Installer"
+      },
+      "noPackageSubstrings": ["Es wurde kein Paket gefunden", "kein anwendbarer Installer", "Keine Installationsprogramme gefunden"]
+    },
+    "fr-FR": {
+      "foundWord": "Trouvé",
+      "labels": {
+        "Publisher": "Publisher",
+        "Description": "Description",
+        "Page d'accueil": "Homepage",
+        "ID de l'Editeur": "Publisher Url",
+        "URL de confidentialité": "Privacy Url",
+        "Programme d'installation": "Installer"
+      },
+      "noPackageSubstrings": ["Aucun package ne correspond", "Aucun programme d'installation applicable", "Aucun programme d'installation trouvé"]
+    },
+    "zh-CN": {
+      "foundWord": "已找到",
+      "labels": {
+        "发布者": "Publisher",
+        "描述": "Description",
+        "主页": "Homepage",
+        "发布服务器 URL": "Publisher Url",
+        "隐私 URL": "Privacy Url",
+        "安装": "Installer"
+      },
+      "noPackageSubstrings": ["找不到与输入条件匹配的程序包", "找不到适用的安装程序", "未找到程序包"]
+    },
+    "es-ES": {
+      "foundWord": "Encontrado",
+      "labels": {
+        "Publicador": "Publisher",
+        "Descripción": "Description",
+        "Página principal": "Homepage",
+        "Instalador": "Installer"
+      },
+      "noPackageSubstrings": ["No se encontró ningún paquete", "ningún instalador aplicable"]
+    },
+    "it-IT": {
+      "foundWord": "Trovato",
+      "labels": {
+        "Editore": "Publisher",
+        "Descrizione": "Description",
+        "Homepage": "Homepage",
+        "Programma di installazione": "Installer"
+      },
+      "noPackageSubstrings": ["Nessun pacchetto trovato", "nessun programma di installazione applicabile"]
+    },
+    "ja-JP": {
+      "foundWord": "見つかりました",
+      "labels": {},
+      "noPackageSubstrings": []
+    },
+    "ko-KR": {
+      "foundWord": "찾음",
+      "labels": {},
+      "noPackageSubstrings": []
+    },
+    "pt-BR": {
+      "foundWord": "Encontrado",
+      "labels": {},
+      "noPackageSubstrings": []
+    },
+    "ru-RU": {
+      "foundWord": "Найдено",
+      "labels": {},
+      "noPackageSubstrings": []
+    },
+    "zh-TW": {
+      "foundWord": "已找到",
+      "labels": {},
+      "noPackageSubstrings": []
+    }
+  }
+}
