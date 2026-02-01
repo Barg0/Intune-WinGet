@@ -1,0 +1,3 @@
+& $wingetPath install -e --id $wingetAppID --silent --scope "machine" --accept-package-agreements --accept-source-agreements --force
+
+For install.ps1 and uninstall.ps1 -> need some further testing
