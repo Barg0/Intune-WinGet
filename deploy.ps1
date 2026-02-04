@@ -21,7 +21,6 @@ $groupCreationBlacklist = @('Microsoft Visual C++*',
 $graphBaseUrl          = "https://graph.microsoft.com/beta"
 $graphScopes           = @('DeviceManagementApps.ReadWrite.All', 'Group.ReadWrite.All')
 $minWindowsRelease     = "21H1"
-$groupNamingAppSuffix  = $true
 $installCommandLine    = "%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\install.ps1"
 $uninstallCommandLine  = "%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\uninstall.ps1"
 $chunkSizeBytes        = 1024l * 1024l * 6l
