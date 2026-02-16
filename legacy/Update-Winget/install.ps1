@@ -20,7 +20,7 @@ $logGet        = $true
 $logRun        = $true
 $enableLogFile = $true
 
-$logFileDirectory = "$env:ProgramData\IntuneLogs\Scripts\$scriptName"
+$logFileDirectory = "$env:ProgramData\IntuneLogs\Applications\$scriptName"
 $logFile          = "$logFileDirectory\$logFileName"
 
 if ($enableLogFile -and -not (Test-Path -Path $logFileDirectory)) {
