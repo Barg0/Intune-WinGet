@@ -100,6 +100,7 @@ function Complete-Script {
 # Categories:
 #   Success   - Desired state (installed or already installed). Exit 0.
 #   RetryScope - No applicable installer for scope; retry without --scope. Exit 0/1 after retry.
+#   RetrySource - Pinned certificate mismatch; retry with --source winget. Exit 0/1 after retry.
 #   RetryLater - Transient (app in use, disk full, reboot needed, etc.). Exit 0 so Intune retries.
 #   Fail      - Unrecoverable (policy, unsupported, invalid param). Exit 1.
 #   Unknown   - Unmapped code; log and treat as Fail.
@@ -120,6 +121,9 @@ function Get-WingetExitCodeInfo {
 
         # --- RetryScope: retry without machine scope ---
         -1978335216    = @{ Category = "RetryScope"; Description = "No applicable installer for scope" }      # NO_APPLICABLE_INSTALLER
+
+        # --- RetrySource: retry with --source winget ---
+        -1978335138    = @{ Category = "RetrySource"; Description = "Pinned certificate mismatch" }            # PINNED_CERTIFICATE_MISMATCH
 
         # --- RetryLater: transient; exit 0 so Intune can retry ---
         -1978334975    = @{ Category = "RetryLater"; Description = "Application is currently running" }       # INSTALL_PACKAGE_IN_USE
@@ -272,6 +276,31 @@ try {
         $exitCode = $LASTEXITCODE
         $exitInfo = Get-WingetExitCodeInfo -ExitCode $exitCode
         Write-Log "Winget install (no scope) exit code: $exitCode ($($exitInfo.Description))" -Tag "Info"
+        Write-Log "Retry result: Category=$($exitInfo.Category)" -Tag "Debug"
+
+        if ($exitCode -eq 0 -or $exitInfo.Category -eq "Success") {
+            Write-Log "Installation completed successfully after retry." -Tag "Debug"
+            Write-Log "Installation completed successfully." -Tag "Success"
+            Complete-Script -ExitCode 0
+        }
+        Write-Log "Retry failed: $($exitInfo.Description)" -Tag "Debug"
+        Write-Log "Install failed after retry: $($exitInfo.Description)" -Tag "Error"
+        Complete-Script -ExitCode 1
+    }
+
+    if ($exitInfo.Category -eq "RetrySource" -and $exitCode -eq -1978335138) {
+        Write-Log "RetrySource: retrying with --source winget." -Tag "Debug"
+        Write-Log "Pinned certificate mismatch detected; retrying with --source winget." -Tag "Info"
+        $installArgsWithSource = @('install', '-e', '--id', $wingetAppID, '--silent', '--skip-dependencies', '--scope', 'machine', '--accept-package-agreements', '--accept-source-agreements', '--force', '--source', 'winget')
+        if ($installOverride) {
+            $installArgsWithSource += '--override'
+            $installArgsWithSource += $installOverride
+        }
+        Write-Log "Invoking: winget $($installArgsWithSource -join ' ')" -Tag "Debug"
+        & $wingetPath @installArgsWithSource
+        $exitCode = $LASTEXITCODE
+        $exitInfo = Get-WingetExitCodeInfo -ExitCode $exitCode
+        Write-Log "Winget install (with --source winget) exit code: $exitCode ($($exitInfo.Description))" -Tag "Info"
         Write-Log "Retry result: Category=$($exitInfo.Category)" -Tag "Debug"
 
         if ($exitCode -eq 0 -or $exitInfo.Category -eq "Success") {
