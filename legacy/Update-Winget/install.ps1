@@ -2,19 +2,20 @@
 $scriptStartTime = Get-Date
 
 # ---------------------------[ Script Name ]---------------------------
-$scriptName  = "Update-Winget"
-$logFileName = "Update-Winget.log"
+$scriptName  = "Winget"
+$logFileName = "install.log"
 
 # ---------------------------[ Configuration ]---------------------------
 $githubApiUrl   = "https://api.github.com/repos/microsoft/winget-cli/releases/latest"
 $tempDirectory  = "$env:ProgramData\IntuneFiles\Temp\WingetUpdate"
 $changesApplied = $false
+$rebootRequired = $false
 
 $ProgressPreference = 'SilentlyContinue'
 
 # ---------------------------[ Logging Setup ]---------------------------
 $log           = $true
-$logDebug      = $true
+$logDebug      = $false
 $logGet        = $true
 $logRun        = $true
 $enableLogFile = $true
@@ -480,6 +481,7 @@ function Register-WingetDependencyPaths {
         [Environment]::SetEnvironmentVariable('Path', $currentPath, 'Machine')
         Write-Log "Machine PATH updated successfully" -Tag "Success"
         $script:changesApplied = $true
+        $script:rebootRequired = $true
     }
     else {
         Write-Log "No PATH changes needed" -Tag "Info"
@@ -558,18 +560,14 @@ try {
     # Step 7: Cleanup
     Remove-TempFiles
 
-    # Step 8: Reboot if any changes were applied
-    if ($changesApplied) {
-        Write-Log "Changes were applied, initiating immediate reboot" -Tag "Info"
-
-        $scriptEndTime = Get-Date
-        $duration      = $scriptEndTime - $scriptStartTime
-        Write-Log "Script execution time: $($duration.ToString('hh\:mm\:ss\.ff'))" -Tag "Info"
-        Write-Log "Exit Code: 0" -Tag "Info"
-        Write-Log "======== Script Completed ========" -Tag "End"
-
-        & shutdown.exe /r /t 0 /f
-        exit 0
+    # Step 8: Exit with appropriate code
+    if ($rebootRequired) {
+        Write-Log "SYSTEM PATH was modified, returning exit code 3010 (reboot required)" -Tag "Info"
+        Complete-Script -ExitCode 3010
+    }
+    elseif ($changesApplied) {
+        Write-Log "Packages were installed but no PATH changes needed, no reboot required" -Tag "Info"
+        Complete-Script -ExitCode 0
     }
     else {
         Write-Log "No changes were applied" -Tag "Info"

@@ -2,8 +2,8 @@
 $scriptStartTime = Get-Date
 
 # ---------------------------[ Script Name ]---------------------------
-$scriptName  = "Detect-Winget"
-$logFileName = "Detect-Winget.log"
+$scriptName  = "Winget"
+$logFileName = "detection.log"
 
 # ---------------------------[ Configuration ]---------------------------
 $minimumRequiredVersion = [Version]"1.12.470"
