@@ -237,13 +237,34 @@ try {
         $installArgs += $installOverride
         Write-Log "Using install override: $installOverride" -Tag "Info"
     }
-    Write-Log "Installing with scope machine." -Tag "Run"
-    Write-Log "Invoking: winget $($installArgs -join ' ')" -Tag "Debug"
-    & $wingetPath @installArgs
-    $exitCode = $LASTEXITCODE
-    $exitInfo = Get-WingetExitCodeInfo -ExitCode $exitCode
-    Write-Log "Winget install exit code: $exitCode ($($exitInfo.Description)); Category=$($exitInfo.Category)" -Tag "Info"
-    Write-Log "Exit code lookup: Category=$($exitInfo.Category), Description=$($exitInfo.Description)" -Tag "Debug"
+
+    $maxInProgressRetries = 10
+    $inProgressDelaySeconds = 60
+    $retryCount = 0
+
+    do {
+        if ($retryCount -gt 0) {
+            Write-Log "Another installation is in progress. Waiting $inProgressDelaySeconds seconds before retry $retryCount of $maxInProgressRetries..." -Tag "Info"
+            Start-Sleep -Seconds $inProgressDelaySeconds
+        }
+
+        Write-Log "Installing with scope machine$(if ($retryCount -gt 0) { " (retry $retryCount of $maxInProgressRetries)" })." -Tag "Run"
+        Write-Log "Invoking: winget $($installArgs -join ' ')" -Tag "Debug"
+        & $wingetPath @installArgs
+        $exitCode = $LASTEXITCODE
+        $exitInfo = Get-WingetExitCodeInfo -ExitCode $exitCode
+        Write-Log "Winget install exit code: $exitCode ($($exitInfo.Description)); Category=$($exitInfo.Category)" -Tag "Info"
+        Write-Log "Exit code lookup: Category=$($exitInfo.Category), Description=$($exitInfo.Description)" -Tag "Debug"
+
+        if ($exitCode -ne -1978334974) { break }
+
+        $retryCount++
+    } while ($retryCount -le $maxInProgressRetries)
+
+    if ($exitCode -eq -1978334974) {
+        Write-Log "Installation still blocked after $maxInProgressRetries retries (another installation in progress). Exiting 0 for Intune retry." -Tag "Error"
+        Complete-Script -ExitCode 0
+    }
 
     if ($exitCode -eq 0) {
         Write-Log "Installation completed successfully (exit 0)." -Tag "Debug"
