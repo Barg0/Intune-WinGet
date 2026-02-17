@@ -238,8 +238,8 @@ try {
         Write-Log "Using install override: $installOverride" -Tag "Info"
     }
 
-    $maxInProgressRetries = 10
-    $inProgressDelaySeconds = 60
+    $maxInProgressRetries = 15
+    $inProgressDelaySeconds = 120
     $retryCount = 0
 
     do {
@@ -343,3 +343,4 @@ catch {
     Write-Log "Exception details: $($_.ScriptStackTrace)" -Tag "Debug"
     Complete-Script -ExitCode 1
 }
+
