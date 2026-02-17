@@ -105,6 +105,11 @@ function Complete-Script {
 #   Fail      - Unrecoverable (policy, unsupported, invalid param). Exit 1.
 #   Unknown   - Unmapped code; log and treat as Fail.
 #
+# Retry engine: A loop applies workarounds based on category. Each workaround (RetryScope,
+# RetrySource) is tried at most once. Workarounds chain automatically – e.g. RetrySource ->
+# RetryScope produces a final attempt with --source winget and no --scope. Every winget call
+# is also wrapped in an in-progress wait loop (RetryLater for -1978334974).
+#
 # Install-specific errors (0x8A150101–0x8A150114) and general errors are included so logs are clear
 # and behaviour is consistent. Some codes are unlikely in silent/automated runs but are still mapped.
 function Get-WingetExitCodeInfo {
@@ -230,113 +235,107 @@ try {
     }
     Write-Log "Winget version check passed." -Tag "Debug"
 
-    # First attempt: machine scope
-    $installArgs = @('install', '-e', '--id', $wingetAppID, '--silent', '--skip-dependencies', '--scope', 'machine', '--accept-package-agreements', '--accept-source-agreements', '--force')
+    # ---------------------------[ Retry Engine ]---------------------------
+    # Workaround flags – each is applied at most once. The engine loops until success or
+    # no more workarounds remain. Every winget invocation is wrapped with the in-progress
+    # wait loop so that "another installation in progress" is handled consistently.
+    $useScope           = $true   # start with --scope machine
+    $useSource          = $false  # start without --source winget
+    $triedNoScope       = $false
+    $triedSource        = $false
+
+    $maxInProgressRetries   = 15
+    $inProgressDelaySeconds = 120
+
     if ($installOverride) {
-        $installArgs += '--override'
-        $installArgs += $installOverride
         Write-Log "Using install override: $installOverride" -Tag "Info"
     }
 
-    $maxInProgressRetries = 15
-    $inProgressDelaySeconds = 120
-    $retryCount = 0
-
-    do {
-        if ($retryCount -gt 0) {
-            Write-Log "Another installation is in progress. Waiting $inProgressDelaySeconds seconds before retry $retryCount of $maxInProgressRetries..." -Tag "Info"
-            Start-Sleep -Seconds $inProgressDelaySeconds
-        }
-
-        Write-Log "Installing with scope machine$(if ($retryCount -gt 0) { " (retry $retryCount of $maxInProgressRetries)" })." -Tag "Run"
-        Write-Log "Invoking: winget $($installArgs -join ' ')" -Tag "Debug"
-        & $wingetPath @installArgs
-        $exitCode = $LASTEXITCODE
-        $exitInfo = Get-WingetExitCodeInfo -ExitCode $exitCode
-        Write-Log "Winget install exit code: $exitCode ($($exitInfo.Description)); Category=$($exitInfo.Category)" -Tag "Info"
-        Write-Log "Exit code lookup: Category=$($exitInfo.Category), Description=$($exitInfo.Description)" -Tag "Debug"
-
-        if ($exitCode -ne -1978334974) { break }
-
-        $retryCount++
-    } while ($retryCount -le $maxInProgressRetries)
-
-    if ($exitCode -eq -1978334974) {
-        Write-Log "Installation still blocked after $maxInProgressRetries retries (another installation in progress). Exiting 0 for Intune retry." -Tag "Error"
-        Complete-Script -ExitCode 0
-    }
-
-    if ($exitCode -eq 0) {
-        Write-Log "Installation completed successfully (exit 0)." -Tag "Debug"
-        Write-Log "Installation completed successfully." -Tag "Success"
-        Complete-Script -ExitCode 0
-    }
-
-    if ($exitInfo.Category -eq "Success") {
-        Write-Log "Treating as success (e.g. already installed)." -Tag "Debug"
-        Write-Log "Package already installed; treating as success." -Tag "Success"
-        Complete-Script -ExitCode 0
-    }
-
-    if ($exitInfo.Category -eq "RetryLater") {
-        Write-Log "RetryLater: $($exitInfo.Description). Exiting 0 for Intune retry." -Tag "Debug"
-        Write-Log "Install blocked (retry later): $($exitInfo.Description). Exiting 0 for Intune retry." -Tag "Info"
-        Complete-Script -ExitCode 0
-    }
-
-    if ($exitInfo.Category -eq "RetryScope" -and $exitCode -eq -1978335216) {
-        Write-Log "RetryScope: retrying without scope." -Tag "Debug"
-        Write-Log "No applicable installer for machine scope; retrying without scope." -Tag "Info"
-        $installArgsNoScope = @('install', '-e', '--id', $wingetAppID, '--silent', '--skip-dependencies', '--accept-package-agreements', '--accept-source-agreements', '--force')
+    while ($true) {
+        # --- Build argument list for this attempt ---
+        $currentArgs = @('install', '-e', '--id', $wingetAppID, '--silent', '--skip-dependencies',
+                         '--accept-package-agreements', '--accept-source-agreements', '--force')
+        if ($useScope)  { $currentArgs += '--scope',  'machine' }
+        if ($useSource) { $currentArgs += '--source', 'winget'  }
         if ($installOverride) {
-            $installArgsNoScope += '--override'
-            $installArgsNoScope += $installOverride
+            $currentArgs += '--override'
+            $currentArgs += $installOverride
         }
-        Write-Log "Invoking: winget $($installArgsNoScope -join ' ')" -Tag "Debug"
-        & $wingetPath @installArgsNoScope
-        $exitCode = $LASTEXITCODE
-        $exitInfo = Get-WingetExitCodeInfo -ExitCode $exitCode
-        Write-Log "Winget install (no scope) exit code: $exitCode ($($exitInfo.Description))" -Tag "Info"
-        Write-Log "Retry result: Category=$($exitInfo.Category)" -Tag "Debug"
 
-        if ($exitCode -eq 0 -or $exitInfo.Category -eq "Success") {
-            Write-Log "Installation completed successfully after retry." -Tag "Debug"
-            Write-Log "Installation completed successfully." -Tag "Success"
+        $scopeLabel  = if ($useScope)  { "scope machine" } else { "no scope" }
+        $sourceLabel = if ($useSource) { ", source winget" } else { "" }
+        $attemptLabel = "$scopeLabel$sourceLabel"
+
+        # --- In-progress retry loop (wraps every attempt) ---
+        $inProgressCount = 0
+        do {
+            if ($inProgressCount -gt 0) {
+                Write-Log "Another installation is in progress. Waiting $inProgressDelaySeconds seconds before retry $inProgressCount of $maxInProgressRetries..." -Tag "Info"
+                Start-Sleep -Seconds $inProgressDelaySeconds
+            }
+
+            $runLabel = "Installing ($attemptLabel)"
+            if ($inProgressCount -gt 0) { $runLabel += " [in-progress retry $inProgressCount/$maxInProgressRetries]" }
+            Write-Log "$runLabel." -Tag "Run"
+            Write-Log "Invoking: winget $($currentArgs -join ' ')" -Tag "Debug"
+
+            & $wingetPath @currentArgs
+            $exitCode = $LASTEXITCODE
+            $exitInfo = Get-WingetExitCodeInfo -ExitCode $exitCode
+            Write-Log "Winget exit code: $exitCode ($($exitInfo.Description)); Category=$($exitInfo.Category)" -Tag "Info"
+
+            if ($exitCode -ne -1978334974) { break }
+
+            $inProgressCount++
+        } while ($inProgressCount -le $maxInProgressRetries)
+
+        # Still blocked after all in-progress retries – exit 0 so Intune can retry later
+        if ($exitCode -eq -1978334974) {
+            Write-Log "Installation still blocked after $maxInProgressRetries retries (another installation in progress). Exiting 0 for Intune retry." -Tag "Error"
             Complete-Script -ExitCode 0
         }
-        Write-Log "Retry failed: $($exitInfo.Description)" -Tag "Debug"
-        Write-Log "Install failed after retry: $($exitInfo.Description)" -Tag "Error"
-        Complete-Script -ExitCode 1
-    }
 
-    if ($exitInfo.Category -eq "RetrySource" -and $exitCode -eq -1978335138) {
-        Write-Log "RetrySource: retrying with --source winget." -Tag "Debug"
-        Write-Log "Pinned certificate mismatch detected; retrying with --source winget." -Tag "Info"
-        $installArgsWithSource = @('install', '-e', '--id', $wingetAppID, '--silent', '--skip-dependencies', '--scope', 'machine', '--accept-package-agreements', '--accept-source-agreements', '--force', '--source', 'winget')
-        if ($installOverride) {
-            $installArgsWithSource += '--override'
-            $installArgsWithSource += $installOverride
-        }
-        Write-Log "Invoking: winget $($installArgsWithSource -join ' ')" -Tag "Debug"
-        & $wingetPath @installArgsWithSource
-        $exitCode = $LASTEXITCODE
-        $exitInfo = Get-WingetExitCodeInfo -ExitCode $exitCode
-        Write-Log "Winget install (with --source winget) exit code: $exitCode ($($exitInfo.Description))" -Tag "Info"
-        Write-Log "Retry result: Category=$($exitInfo.Category)" -Tag "Debug"
-
+        # --- Success ---
         if ($exitCode -eq 0 -or $exitInfo.Category -eq "Success") {
-            Write-Log "Installation completed successfully after retry." -Tag "Debug"
-            Write-Log "Installation completed successfully." -Tag "Success"
+            if ($triedNoScope -or $triedSource) {
+                Write-Log "Installation completed successfully after workaround ($attemptLabel)." -Tag "Success"
+            } else {
+                Write-Log "Installation completed successfully." -Tag "Success"
+            }
             Complete-Script -ExitCode 0
         }
-        Write-Log "Retry failed: $($exitInfo.Description)" -Tag "Debug"
-        Write-Log "Install failed after retry: $($exitInfo.Description)" -Tag "Error"
-        Complete-Script -ExitCode 1
-    }
 
-    Write-Log "No matching branch; treating as failure." -Tag "Debug"
-    Write-Log "Winget install failed: $($exitInfo.Description)" -Tag "Error"
-    Complete-Script -ExitCode 1
+        # --- RetryLater (transient) – exit 0 so Intune can retry later ---
+        if ($exitInfo.Category -eq "RetryLater") {
+            Write-Log "Install blocked (retry later): $($exitInfo.Description). Exiting 0 for Intune retry." -Tag "Info"
+            Complete-Script -ExitCode 0
+        }
+
+        # --- Apply known workarounds ---
+        $workaroundApplied = $false
+
+        if ($exitInfo.Category -eq "RetryScope" -and -not $triedNoScope) {
+            Write-Log "No applicable installer for machine scope; retrying without --scope." -Tag "Info"
+            $useScope      = $false
+            $triedNoScope  = $true
+            $workaroundApplied = $true
+        }
+
+        if ($exitInfo.Category -eq "RetrySource" -and -not $triedSource) {
+            Write-Log "Pinned certificate mismatch detected; retrying with --source winget." -Tag "Info"
+            $useSource     = $true
+            $triedSource   = $true
+            $workaroundApplied = $true
+        }
+
+        if (-not $workaroundApplied) {
+            Write-Log "No further workarounds available for: $($exitInfo.Description) (Category=$($exitInfo.Category))" -Tag "Debug"
+            Write-Log "Install failed: $($exitInfo.Description)" -Tag "Error"
+            Complete-Script -ExitCode 1
+        }
+
+        Write-Log "Workaround applied; retrying..." -Tag "Debug"
+    }
 }
 catch {
     Write-Log "Install failed. Exception: $_" -Tag "Error"
