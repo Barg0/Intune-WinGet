@@ -309,6 +309,10 @@ function ConvertFrom-WingetShowOutput {
                 $currentKey = 'Tags'
                 $currentSection = 'Tags'
                 if ($val) { [void]$currentValue.Add($val) }
+            } elseif ($key -eq 'Description') {
+                $currentKey = 'Description'
+                $currentSection = 'Description'
+                if ($val) { [void]$currentValue.Add($val) }
             } elseif ($key -eq 'Documentation') {
                 $currentSection = 'Documentation'
                 if (-not $obj['Documentation']) { $obj['Documentation'] = [ordered]@{ } }
@@ -339,10 +343,12 @@ function ConvertFrom-WingetShowOutput {
                 [void]$currentValue.Add($line.Trim())
             } elseif ($currentSection -eq 'Tags') {
                 [void]$currentValue.Add($subKey)
+            } elseif ($currentSection -eq 'Description') {
+                [void]$currentValue.Add($line.Trim())
             }
             continue
         }
-        if ($line -match '^\s{2,}(.+)$' -and $currentSection -in 'ReleaseNotes','Tags') {
+        if ($line -match '^\s{2,}(.+)$' -and $currentSection -in 'ReleaseNotes','Tags','Description') {
             [void]$currentValue.Add($Matches[1].Trim())
         }
     }
@@ -421,7 +427,9 @@ function Export-WingetShowToJson {
     # Build simplified info.json for deploy.ps1: Name, Description, Publisher, InformationUrl (Homepage), PrivacyUrl, Architectures
     $infoOut = [ordered]@{ }
     $infoOut['Name']         = $applicationName
-    $infoOut['Description']  = if ($obj['Description']) { $obj['Description'] } else { '' }
+    $desc = $obj['Description']
+    if ($desc -is [Array]) { $desc = ($desc -join "`n").Trim() }
+    $infoOut['Description']  = if ($desc) { $desc } else { '' }
     $infoOut['Publisher']    = if ($obj['Publisher']) { $obj['Publisher'] } else { '' }
     $infoOut['PublisherUrl'] = if ($obj['PublisherUrl']) { $obj['PublisherUrl'] } else { $null }
     $infoOut['InformationUrl'] = if ($obj['PackageUrl']) { $obj['PackageUrl'] } elseif ($obj['Homepage']) { $obj['Homepage'] } else { $null }
