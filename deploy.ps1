@@ -582,6 +582,10 @@ function Invoke-Win32AppDeployment {
                 -fileName $winMetadata.FileName -setupFile $winMetadata.SetupFile -rules @($detectionRule) `
                 -iconBase64 $iconBase64 -applicableArchitectures $applicableArchitectures -displayVersion 'WinGet' -runAsAccount $runAsAccount `
                 -installCommandLine $installCmd -uninstallCommandLine $uninstallCmd
+            if ([string]::IsNullOrWhiteSpace($iconBase64)) {
+                $null = $fullBody.Remove('largeIcon')
+                Write-Log "No local icon; preserving existing Intune icon" -Tag "Debug"
+            }
             Invoke-GraphApi -method Patch -resource "/deviceAppManagement/mobileApps/$appId" -body $fullBody
             Write-Log "Updated all app metadata (display, description, icon, install, detection)" -Tag "Debug"
         }
