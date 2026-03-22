@@ -1,73 +1,70 @@
-ApplicationName,WingetAppId
-Microsoft Visual C++ 2005 Redistributable (x86),Microsoft.VCRedist.2005.x86
-Microsoft Visual C++ 2005 Redistributable (x64),Microsoft.VCRedist.2005.x64
-Microsoft Visual C++ 2008 Redistributable (x86),Microsoft.VCRedist.2008.x86
-Microsoft Visual C++ 2008 Redistributable (x64),Microsoft.VCRedist.2008.x64
-Microsoft Visual C++ 2010 Redistributable (x86),Microsoft.VCRedist.2010.x86
-Microsoft Visual C++ 2010 Redistributable (x64),Microsoft.VCRedist.2010.x64
-Microsoft Visual C++ 2012 Redistributable (x86),Microsoft.VCRedist.2012.x86
-Microsoft Visual C++ 2012 Redistributable (x64),Microsoft.VCRedist.2012.x64
-Microsoft Visual C++ 2013 Redistributable (x86),Microsoft.VCRedist.2013.x86
-Microsoft Visual C++ 2013 Redistributable (x64),Microsoft.VCRedist.2013.x64
-Microsoft Visual C++ 2015-2022 Redistributable (x86),Microsoft.VCRedist.2015+.x86
-Microsoft Visual C++ 2015-2022 Redistributable (x64),Microsoft.VCRedist.2015+.x64
-Microsoft Visual C++ 2015-2022 Redistributable (Arm64),Microsoft.VCRedist.2015+.arm64
-Microsoft .NET Windows Desktop Runtime 3.1,Microsoft.DotNet.DesktopRuntime.3_1
-Microsoft .NET Windows Desktop Runtime 5.0,Microsoft.DotNet.DesktopRuntime.5
-Microsoft .NET Windows Desktop Runtime 6.0,Microsoft.DotNet.DesktopRuntime.6
-Microsoft .NET Windows Desktop Runtime 7.0,Microsoft.DotNet.DesktopRuntime.7
-Microsoft .NET Windows Desktop Runtime 8.0,Microsoft.DotNet.DesktopRuntime.8
-Microsoft .NET Windows Desktop Runtime 9.0,Microsoft.DotNet.DesktopRuntime.9
-Microsoft ASP.NET Core Runtime 3.1,Microsoft.DotNet.AspNetCore.3_1
-Microsoft ASP.NET Core Runtime 5.0,Microsoft.DotNet.AspNetCore.5
-Microsoft ASP.NET Core Runtime 6.0,Microsoft.DotNet.AspNetCore.6
-Microsoft ASP.NET Core Runtime 7.0,Microsoft.DotNet.AspNetCore.7
-Microsoft ASP.NET Core Runtime 8.0,Microsoft.DotNet.AspNetCore.8
-Microsoft ASP.NET Core Runtime 9.0,Microsoft.DotNet.AspNetCore.9
-Microsoft ASP.NET Core Hosting Bundle 3.1,Microsoft.DotNet.HostingBundle.3_1
-Microsoft ASP.NET Core Hosting Bundle 5.0,Microsoft.DotNet.HostingBundle.5
-Microsoft ASP.NET Core Hosting Bundle 6.0,Microsoft.DotNet.HostingBundle.6
-Microsoft ASP.NET Core Hosting Bundle 7.0,Microsoft.DotNet.HostingBundle.7
-Microsoft ASP.NET Core Hosting Bundle 8.0,Microsoft.DotNet.HostingBundle.8
-Microsoft ASP.NET Core Hosting Bundle 9.0,Microsoft.DotNet.HostingBundle.9
-Microsoft .NET Runtime 3.1,Microsoft.DotNet.Runtime.3_1
-Microsoft .NET Runtime 5.0,Microsoft.DotNet.Runtime.5
-Microsoft .NET Runtime 6.0,Microsoft.DotNet.Runtime.6
-Microsoft .NET Runtime 7.0,Microsoft.DotNet.Runtime.7
-Microsoft .NET Runtime 8.0,Microsoft.DotNet.Runtime.8
-Microsoft .NET Runtime 9.0,Microsoft.DotNet.Runtime.9
-Microsoft ODBC Driver 11 for SQL Server,Microsoft.msodbcsql.11
-Microsoft ODBC Driver 13 for SQL Server,Microsoft.msodbcsql.13
-Microsoft ODBC Driver 17 for SQL Server,Microsoft.msodbcsql.17
-Microsoft ODBC Driver 18 for SQL Server,Microsoft.msodbcsql.18
-Visual Studio 2010 Tools for Office Runtime,Microsoft.VSTOR
-Visual Studio Professional 2022,Microsoft.VisualStudio.2022.Professional
-Tabby,Eugeny.Tabby
-AGFEO Dashboard,AGFEO.AGFEODashboard
-KeePass,DominikReichl.KeePass
-Loxone Config,Loxone.LoxoneConfig
-PDFsam Basic,PDFsam.PDFsam
-OpenSSL,ShiningLight.OpenSSL.Dev
-7-Zip,7zip.7zip
-Jabra Direct,Jabra.Direct
-Java 8,JavaRuntimeEnvironment
-Logi Options+,Logitech.OptionsPlus
-Google Chrome,Google.Chrome
-3Dconnexion 3DxWare 10,3Dconnexion.3DxWare.10
-draw.io,JGraph.Draw
-DYMO Connect,DYMO.DYMOConnect
-eDrawings,SolidWorks.eDrawings
-LuxTrust Middleware,LuxTrust.LuxTrustMiddleware
-UltraVNC,uvncbvba.UltraVNC
-Notepad++,Notepad++.Notepad++
-Unity Hub,Unity.UnityHub
-Tabby,Eugeny.Tabby
-YubiKey Smart Card Minidriver,Yubico.YubiKeySmartCardMinidriver
-Local,Flywheel.Local
-WinSCP,WinSCP.WinSCP
-Jabra Direct,Jabra.Direct
-OpenSSL,ShiningLight.OpenSSL.Dev
-Greenshot,Greenshot.Greenshot
-Microsoft Azure Storage Explorer,Microsoft.Azure.StorageExplorer
-Remote Desktop,Microsoft.RemoteDesktopClient
-Sublime Text 4,SublimeHQ.SublimeText.4
+ApplicationName,WingetAppId,InstallContext,InstallOverride
+Microsoft Visual C++ 2005 Redistributable (x86),Microsoft.VCRedist.2005.x86,system,
+Microsoft Visual C++ 2005 Redistributable (x64),Microsoft.VCRedist.2005.x64,system,
+Microsoft Visual C++ 2008 Redistributable (x86),Microsoft.VCRedist.2008.x86,system,
+Microsoft Visual C++ 2008 Redistributable (x64),Microsoft.VCRedist.2008.x64,system,
+Microsoft Visual C++ 2010 Redistributable (x86),Microsoft.VCRedist.2010.x86,system,
+Microsoft Visual C++ 2010 Redistributable (x64),Microsoft.VCRedist.2010.x64,system,
+Microsoft Visual C++ 2012 Redistributable (x86),Microsoft.VCRedist.2012.x86,system,
+Microsoft Visual C++ 2012 Redistributable (x64),Microsoft.VCRedist.2012.x64,system,
+Microsoft Visual C++ 2013 Redistributable (x86),Microsoft.VCRedist.2013.x86,system,
+Microsoft Visual C++ 2013 Redistributable (x64),Microsoft.VCRedist.2013.x64,system,
+Microsoft Visual C++ 2015-2022 Redistributable (x86),Microsoft.VCRedist.2015+.x86,system,
+Microsoft Visual C++ 2015-2022 Redistributable (x64),Microsoft.VCRedist.2015+.x64,system,
+Microsoft Visual C++ 2015-2022 Redistributable (Arm64),Microsoft.VCRedist.2015+.arm64,system,
+Microsoft .NET Windows Desktop Runtime 3.1,Microsoft.DotNet.DesktopRuntime.3_1,system,
+Microsoft .NET Windows Desktop Runtime 5.0,Microsoft.DotNet.DesktopRuntime.5,system,
+Microsoft .NET Windows Desktop Runtime 6.0,Microsoft.DotNet.DesktopRuntime.6,system,
+Microsoft .NET Windows Desktop Runtime 7.0,Microsoft.DotNet.DesktopRuntime.7,system,
+Microsoft .NET Windows Desktop Runtime 8.0,Microsoft.DotNet.DesktopRuntime.8,system,
+Microsoft .NET Windows Desktop Runtime 9.0,Microsoft.DotNet.DesktopRuntime.9,system,
+Microsoft ASP.NET Core Runtime 3.1,Microsoft.DotNet.AspNetCore.3_1,system,
+Microsoft ASP.NET Core Runtime 5.0,Microsoft.DotNet.AspNetCore.5,system,
+Microsoft ASP.NET Core Runtime 6.0,Microsoft.DotNet.AspNetCore.6,system,
+Microsoft ASP.NET Core Runtime 7.0,Microsoft.DotNet.AspNetCore.7,system,
+Microsoft ASP.NET Core Runtime 8.0,Microsoft.DotNet.AspNetCore.8,system,
+Microsoft ASP.NET Core Runtime 9.0,Microsoft.DotNet.AspNetCore.9,system,
+Microsoft ASP.NET Core Hosting Bundle 3.1,Microsoft.DotNet.HostingBundle.3_1,system,
+Microsoft ASP.NET Core Hosting Bundle 5.0,Microsoft.DotNet.HostingBundle.5,system,
+Microsoft ASP.NET Core Hosting Bundle 6.0,Microsoft.DotNet.HostingBundle.6,system,
+Microsoft ASP.NET Core Hosting Bundle 7.0,Microsoft.DotNet.HostingBundle.7,system,
+Microsoft ASP.NET Core Hosting Bundle 8.0,Microsoft.DotNet.HostingBundle.8,system,
+Microsoft ASP.NET Core Hosting Bundle 9.0,Microsoft.DotNet.HostingBundle.9,system,
+Microsoft .NET Runtime 3.1,Microsoft.DotNet.Runtime.3_1,system,
+Microsoft .NET Runtime 5.0,Microsoft.DotNet.Runtime.5,system,
+Microsoft .NET Runtime 6.0,Microsoft.DotNet.Runtime.6,system,
+Microsoft .NET Runtime 7.0,Microsoft.DotNet.Runtime.7,system,
+Microsoft .NET Runtime 8.0,Microsoft.DotNet.Runtime.8,system,
+Microsoft .NET Runtime 9.0,Microsoft.DotNet.Runtime.9,system,
+Microsoft ODBC Driver 11 for SQL Server,Microsoft.msodbcsql.11,system,
+Microsoft ODBC Driver 13 for SQL Server,Microsoft.msodbcsql.13,system,
+Microsoft ODBC Driver 17 for SQL Server,Microsoft.msodbcsql.17,system,
+Microsoft ODBC Driver 18 for SQL Server,Microsoft.msodbcsql.18,system,
+Visual Studio 2010 Tools for Office Runtime,Microsoft.VSTOR,system,
+Visual Studio Professional 2022,Microsoft.VisualStudio.2022.Professional,system,
+Tabby,Eugeny.Tabby,system,
+AGFEO Dashboard,AGFEO.AGFEODashboard,system,
+KeePass,DominikReichl.KeePass,system,
+Loxone Config,Loxone.LoxoneConfig,system,
+PDFsam Basic,PDFsam.PDFsam,system,
+OpenSSL,ShiningLight.OpenSSL.Dev,system,
+7-Zip,7zip.7zip,system,
+Jabra Direct,Jabra.Direct,system,
+Java 8,JavaRuntimeEnvironment,system,
+Logi Options+,Logitech.OptionsPlus,system,
+Google Chrome,Google.Chrome,system,
+3Dconnexion 3DxWare 10,3Dconnexion.3DxWare.10,system,
+draw.io,JGraph.Draw,system,
+DYMO Connect,DYMO.DYMOConnect,system,
+eDrawings,SolidWorks.eDrawings,system,
+LuxTrust Middleware,LuxTrust.LuxTrustMiddleware,system,
+UltraVNC,uvncbvba.UltraVNC,system,
+Notepad++,Notepad++.Notepad++,system,
+Unity Hub,Unity.UnityHub,system,
+YubiKey Smart Card Minidriver,Yubico.YubiKeySmartCardMinidriver,system,
+Local,Flywheel.Local,system,
+WinSCP,WinSCP.WinSCP,system,
+Greenshot,Greenshot.Greenshot,system,
+Microsoft Azure Storage Explorer,Microsoft.Azure.StorageExplorer,system,
+Remote Desktop,Microsoft.RemoteDesktopClient,system,
+Sublime Text 4,SublimeHQ.SublimeText.4,system,

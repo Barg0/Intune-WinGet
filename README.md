@@ -44,16 +44,18 @@ Install-Module -Name Microsoft.Graph, Microsoft.Graph.Beta -Scope CurrentUser
 |--------|-------------|
 | `ApplicationName` | Display name (used for folder, Intune app name) |
 | `WingetAppId` | Winget package identifier (e.g. `7zip.7zip`) |
+| `InstallContext` | `system` or `user` – system uses path resolution (WindowsApps), user calls winget directly. Default: `system` |
+| `InstallOverride` | Optional string passed to `winget install --override` (e.g. `/silent`). Leave empty for none. |
 
 **How to find `WingetAppId`:**
 
 - Search: `winget search "7-Zip"` → look at the **Id** column
 
 ```csv
-ApplicationName,WingetAppId
-7-Zip,7zip.7zip
-Notepad++,Notepad++.Notepad++
-Jabra Direct,Jabra.Direct
+ApplicationName,WingetAppId,InstallContext,InstallOverride
+7-Zip,7zip.7zip,system,
+Notepad++,Notepad++.Notepad++,system,
+Jabra Direct,Jabra.Direct,user,/silent
 ```
 
 ### 2. Run packaging
@@ -70,7 +72,13 @@ This creates `.intunewin` packages in `apps\<AppName>\` and fetches metadata (de
 .\deploy.ps1
 ```
 
-Connect to Microsoft Graph when prompted, then the script uploads all packaged apps to Intune and optionally creates assignment groups.
+Connect to Microsoft Graph when prompted. The script deploys **apps listed in `apps.csv`** (that have a matching packaged folder in `apps/`), uploads them to Intune, and optionally creates assignment groups.
+
+**Overwrite existing apps** (re-upload content and refresh all metadata, keep assignments unchanged):
+
+```powershell
+.\deploy.ps1 -OverwriteExisting
+```
 
 ---
 
@@ -100,7 +108,7 @@ Builds Win32 app packages from `apps.csv` using templates and winget metadata.
 ### Output per app
 
 - `AppName.intunewin` – Intune-ready package
-- `info.json` – Name, Description, Publisher, URLs, Architectures
+- `info.json` – Name, Description, Publisher, URLs, Architectures, InstallContext (for deploy runAsAccount)
 - `detection.ps1` – Detection script
 - `scripts/install.ps1`, `scripts/uninstall.ps1` – Install/uninstall scripts
 
@@ -114,13 +122,22 @@ Uploads packaged apps from `apps/` to Microsoft Intune via Graph API (beta) and 
 
 | Feature | Description |
 |---------|-------------|
+| 📄 **CSV-driven deploy** | Deploys apps listed in `apps.csv`; skips rows with no matching packaged folder |
 | 📤 **Win32 upload** | Creates app, uploads content (chunked), commits with encryption info |
 | 🏛️ **Architecture** | Sets Requirements tab from `info.json` (x86-only → x86,x64) |
+| 👤 **Install context** | When `InstallContext=user` in info.json, sets `runAsAccount=user` and uses `powershell.exe` for install/uninstall; system context uses `%WINDIR%\sysnative\...` path |
 | 🖼️ **Icons** | Resolves icons from `icons/` (exact + prefix matching) |
 | 👥 **Group creation** | Creates RQ (Required) and AV (Available) groups with configurable naming |
+| 🔄 **OverwriteExisting** | `-OverwriteExisting` re-uploads content and refreshes all app metadata; group assignments remain unchanged |
 | 🚫 **Blacklist** | Skip group creation for specific apps (wildcards supported) |
 | 🔐 **Graph auth** | Checks modules, scopes, and tenant; re-auths if scopes missing |
 | 📢 **Notifications** | Required assignments use “Hide all toast notifications” |
+
+### Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `-OverwriteExisting` | Re-upload content and refresh all metadata for apps already in Intune; group assignments stay unchanged |
 
 ### Configuration (top of script)
 
@@ -144,16 +161,17 @@ Uploads packaged apps from `apps/` to Microsoft Intune via Graph API (beta) and 
 
 ### App defaults
 
-- **App version**: `Winget`
-- **Install behavior**: System
+- **App version**: `WinGet`
+- **Install behavior**: System (or User when `InstallContext=user`)
 - **Device restart**: Based on return codes (0 = success; 1 = failed)
 - **Allow available uninstall**: Yes
 - **Max install time**: 60 min
 - **Minimum Windows**: 21H1
 
-### Skipping existing apps
+### Skipping vs overwriting existing apps
 
-Apps already in Intune (by `displayName`) are skipped with a log entry.
+- **Default:** Apps already in Intune (by `displayName`) are skipped with a log entry.
+- **`-OverwriteExisting`:** Re-uploads content, updates all metadata (display name, description, icon, install/uninstall commands, detection rule, etc.), and skips group creation/assignment. Assignments stay as-is.
 
 ---
 
@@ -230,8 +248,9 @@ Intune-Winget-main/
 
 ### deploy.ps1
 
-| Variable | Type | Description |
-|----------|------|-------------|
+| Parameter/Variable | Type | Description |
+|--------------------|------|-------------|
+| `-OverwriteExisting` | switch | Re-upload and refresh existing apps; keep assignments |
 | `$enableGroupCreation` | bool | Create groups and assign |
 | `$groupNamingAppSuffix` | bool | App name at end vs before RQ/AV |
 | `$groupCreationBlacklist` | string[] | Wildcard patterns to skip |

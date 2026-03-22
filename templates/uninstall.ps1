@@ -3,7 +3,8 @@ $scriptStartTime = Get-Date
 
 # ---------------------------[ Configuration ]---------------------------
 $applicationName  = "__APPLICATION_NAME__"
-$wingetAppID      = "__WINGET_APP_ID__"
+$wingetAppId      = "__WINGET_APP_ID__"
+$installContext   = "__INSTALL_CONTEXT__"
 
 $logFileName      = "uninstall.log"
 
@@ -31,6 +32,7 @@ function Write-Log {
 
     if (-not $log) { return }
 
+    # Per-tag switches
     if (($Tag -eq "Debug") -and (-not $logDebug)) { return }
     if (($Tag -eq "Get")   -and (-not $logGet))   { return }
     if (($Tag -eq "Run")   -and (-not $logRun))   { return }
@@ -153,9 +155,9 @@ function Get-WingetPath {
 # If version check fails we exit 0 so Intune does not flag the app as failed and can retry after reboot.
 function Test-WingetVersion {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$WingetPath)
+    param([Parameter(Mandatory)][string]$wingetPath)
 
-    $versionOutput = & $WingetPath --version 2>&1
+    $versionOutput = & $wingetPath --version 2>&1
     $exitCode = $LASTEXITCODE
     $versionString = ($versionOutput | Out-String).Trim()
     $isHealthy = ($exitCode -eq 0)
@@ -166,15 +168,16 @@ function Test-WingetVersion {
 # ---------------------------[ Script Start ]---------------------------
 Write-Log "======== Uninstall Script Started ========" -Tag "Start"
 Write-Log "ComputerName: $env:COMPUTERNAME | User: $env:USERNAME | Application: $applicationName" -Tag "Info"
-Write-Log "Winget App ID: $wingetAppID" -Tag "Info"
+Write-Log "Winget App ID: $wingetAppId | Install context: $installContext" -Tag "Info"
 
 # ---------------------------[ Winget Uninstall ]---------------------------
-try {
-    Write-Log "Entering uninstall try block. wingetAppID=$wingetAppID" -Tag "Debug"
-    $wingetPath = Get-WingetPath
-    Write-Log "Resolved Winget path." -Tag "Get"
+$isUserContext = ($installContext -eq 'user')
+$wingetExe = if ($isUserContext) { 'winget' } else { (Get-WingetPath) }
+if (-not $isUserContext) { Write-Log "Resolved Winget path (system context)." -Tag "Get" }
 
-    $wingetCheck = Test-WingetVersion -WingetPath $wingetPath
+try {
+    Write-Log "Entering uninstall try block. wingetAppId=$wingetAppId | context=$installContext" -Tag "Debug"
+    $wingetCheck = Test-WingetVersion -wingetPath $wingetExe
     Write-Log "Winget version: $($wingetCheck.Version)" -Tag "Info"
     if (-not $wingetCheck.IsHealthy) {
         Write-Log "Winget version check failed. Restart your computer so Intune can retry, or run the Winget repair script (e.g. Winget - System Context)." -Tag "Error"
@@ -183,44 +186,54 @@ try {
     }
     Write-Log "Winget version check passed." -Tag "Debug"
 
-    # First attempt: machine scope
-    Write-Log "Uninstalling with scope machine." -Tag "Run"
-    Write-Log "Invoking: winget uninstall -e --id $wingetAppID --silent --scope machine --accept-source-agreements --force" -Tag "Debug"
-    & $wingetPath uninstall -e --id $wingetAppID --silent --scope machine --accept-source-agreements --force
-    $exitCode = $LASTEXITCODE
-    $exitInfo = Get-WingetUninstallExitCodeInfo -ExitCode $exitCode
-    Write-Log "Winget uninstall exit code: $exitCode ($($exitInfo.Description)); Category=$($exitInfo.Category)" -Tag "Info"
-    Write-Log "Exit code lookup: Category=$($exitInfo.Category)" -Tag "Debug"
+    # Match install script: if install fell back to no-scope, uninstall must also try no-scope
+    # before treating "no packages found" as success.
+    $defaultScope = if ($isUserContext) { 'user' } else { 'machine' }
+    $triedNoScope = $false
 
-    if ($exitCode -eq 0) {
-        Write-Log "Uninstallation completed successfully (exit 0)." -Tag "Debug"
-        Write-Log "Uninstallation completed successfully." -Tag "Success"
-        Complete-Script -ExitCode 0
+    while ($true) {
+        $useScope = -not $triedNoScope
+        $scopeLabel = if ($useScope) { "scope $defaultScope" } else { "no scope" }
+
+        Write-Log "Uninstalling with $scopeLabel." -Tag "Run"
+        $uninstallArgs = @('uninstall', '-e', '--id', $wingetAppId, '--silent', '--accept-source-agreements', '--force')
+        if ($useScope) { $uninstallArgs += '--scope', $defaultScope }
+        Write-Log "Invoking: winget $($uninstallArgs -join ' ')" -Tag "Debug"
+
+        & $wingetExe @uninstallArgs
+        $exitCode = $LASTEXITCODE
+        $exitInfo = Get-WingetUninstallExitCodeInfo -exitCode $exitCode
+        Write-Log "Winget uninstall ($scopeLabel) exit code: $exitCode ($($exitInfo.Description)); Category=$($exitInfo.Category)" -Tag "Info"
+
+        if ($exitCode -eq 0) {
+            $msg = if ($triedNoScope) { "Uninstallation completed successfully after retry (no scope)." } else { "Uninstallation completed successfully." }
+            Write-Log $msg -Tag "Success"
+            Complete-Script -ExitCode 0
+        }
+
+        # -1978335212 = NO_APPLICATIONS_FOUND. If we tried with scope first, the app may have been
+        # installed without scope (install workaround). Retry without scope before treating as success.
+        if ($exitCode -eq -1978335212 -and -not $triedNoScope) {
+            Write-Log "No package found for scope $defaultScope; retrying without --scope (install may have used no-scope workaround)." -Tag "Info"
+            $triedNoScope = $true
+            continue
+        }
+
+        if ($exitCode -eq -1978335212) {
+            Write-Log "No package to uninstall; treating as success." -Tag "Success"
+            Complete-Script -ExitCode 0
+        }
+
+        # Other failure – retry without scope once (same as install fallback)
+        if (-not $triedNoScope) {
+            Write-Log "Uninstall failed for scope $defaultScope; retrying without --scope." -Tag "Info"
+            $triedNoScope = $true
+            continue
+        }
+
+        Write-Log "Uninstall failed: $($exitInfo.Description)" -Tag "Error"
+        Complete-Script -ExitCode 1
     }
-
-    if ($exitInfo.Category -eq "Success") {
-        Write-Log "No package to uninstall; treating as success." -Tag "Debug"
-        Write-Log "No package to uninstall; treating as success." -Tag "Success"
-        Complete-Script -ExitCode 0
-    }
-
-    # Retry without scope (e.g. user-scoped install)
-    Write-Log "Retrying uninstall without scope." -Tag "Info"
-    Write-Log "Invoking: winget uninstall (no scope)" -Tag "Debug"
-    & $wingetPath uninstall -e --id $wingetAppID --silent --accept-source-agreements --force
-    $exitCode = $LASTEXITCODE
-    $exitInfo = Get-WingetUninstallExitCodeInfo -ExitCode $exitCode
-    Write-Log "Winget uninstall (no scope) exit code: $exitCode ($($exitInfo.Description))" -Tag "Info"
-    Write-Log "Retry result: Category=$($exitInfo.Category)" -Tag "Debug"
-
-    if ($exitCode -eq 0 -or $exitInfo.Category -eq "Success") {
-        Write-Log "Uninstallation completed successfully after retry." -Tag "Debug"
-        Write-Log "Uninstallation completed successfully." -Tag "Success"
-        Complete-Script -ExitCode 0
-    }
-
-    Write-Log "Uninstall failed: $($exitInfo.Description)" -Tag "Error"
-    Complete-Script -ExitCode 1
 }
 catch {
     Write-Log "Uninstall failed. Exception: $_" -Tag "Error"

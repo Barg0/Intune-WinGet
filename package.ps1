@@ -137,22 +137,34 @@ function Set-Placeholders {
         [Parameter(Mandatory)] [string]$templatePath,
         [Parameter(Mandatory)] [string]$outputPath,
         [Parameter(Mandatory)] [string]$applicationName,
-        [Parameter(Mandatory)] [string]$wingetAppId
+        [Parameter(Mandatory)] [string]$wingetAppId,
+        [string]$installContext = 'system',
+        [string]$installOverride = ''
     )
 
     Write-Log "Set-Placeholders: templatePath='$templatePath' -> outputPath='$outputPath'" -Tag "Debug"
-    Write-Log "Set-Placeholders: applicationName='$applicationName' | wingetAppId='$wingetAppId'" -Tag "Debug"
+    Write-Log "Set-Placeholders: applicationName='$applicationName' | wingetAppId='$wingetAppId' | installContext='$installContext'" -Tag "Debug"
 
     $content = Get-Content -LiteralPath $templatePath -Raw
     Write-Log "Set-Placeholders: read template ($($content.Length) chars)" -Tag "Debug"
 
-    # Preferred: placeholder replacement
     $content = $content.Replace('__APPLICATION_NAME__', $applicationName)
     $content = $content.Replace('__WINGET_APP_ID__', $wingetAppId)
+    $contextNormalized = $installContext.Trim().ToLowerInvariant()
+    if ($contextNormalized -notmatch '^(system|user)$') { $contextNormalized = 'system' }
+    $content = $content.Replace('__INSTALL_CONTEXT__', $contextNormalized)
 
-    # Fallback: rewrite ONLY these two variable lines if placeholders not present
+    if (-not [string]::IsNullOrWhiteSpace($installOverride)) {
+        $overrideEscaped = $installOverride.Trim().Replace('"', '`"').Replace("`r", '').Replace("`n", ' ')
+        $content = $content.Replace('__INSTALL_OVERRIDE__', $overrideEscaped)
+        $content = $content -replace '(?m)^\s*\$installOverride\s*=\s*.*$', "`$installOverride = `"$overrideEscaped`""
+    } else {
+        $content = $content.Replace('__INSTALL_OVERRIDE__', '')
+    }
+
     $content = $content -replace '(?m)^\s*\$applicationName\s*=\s*.*$', "`$applicationName = `"$applicationName`""
-    $content = $content -replace '(?m)^\s*\$wingetAppID\s*=\s*.*$', "`$wingetAppID = `"$wingetAppId`""
+    $content = $content -replace '(?m)^\s*\$wingetAppId\s*=\s*.*$', "`$wingetAppId = `"$wingetAppId`""
+    $content = $content -replace '(?m)^\s*\$installContext\s*=\s*.*$', "`$installContext = `"$contextNormalized`""
 
     Set-Content -LiteralPath $outputPath -Value $content -Encoding UTF8
     Write-Log "Set-Placeholders: wrote output file '$outputPath'" -Tag "Debug"
@@ -259,9 +271,9 @@ function ConvertFrom-WingetLocalizedOutput {
 }
 
 function Invoke-WingetShowRaw {
-    param([string]$WingetId, [string]$Architecture)
-    $wingetArgs = @('show', '--id', $WingetId)
-    if ($Architecture) { $wingetArgs += '--architecture', $Architecture }
+    param([string]$wingetId, [string]$architecture)
+    $wingetArgs = @('show', '--id', $wingetId)
+    if ($architecture) { $wingetArgs += '--architecture', $architecture }
     $prevEnc = [Console]::OutputEncoding
     [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
     try {
@@ -273,11 +285,11 @@ function Invoke-WingetShowRaw {
 }
 
 function ConvertFrom-WingetShowOutput {
-    param([string]$NormalizedOutput)
+    param([string]$normalizedOutput)
     $result = @{ Obj = [ordered]@{ }; HasInstaller = $false }
-    if ([string]::IsNullOrWhiteSpace($NormalizedOutput)) { return $result }
+    if ([string]::IsNullOrWhiteSpace($normalizedOutput)) { return $result }
 
-    $lines = $NormalizedOutput -split "`r?`n"
+    $lines = $normalizedOutput -split "`r?`n"
     $obj   = [ordered]@{ }
     $currentKey = $null
     $currentValue = [System.Collections.ArrayList]::new()
@@ -378,7 +390,8 @@ function Export-WingetShowToJson {
     param(
         [Parameter(Mandatory)] [string]$wingetId,
         [Parameter(Mandatory)] [string]$appFolder,
-        [Parameter(Mandatory)] [string]$applicationName
+        [Parameter(Mandatory)] [string]$applicationName,
+        [string]$installContext = 'system'
     )
 
     $jsonFileName = 'info.json'
@@ -392,7 +405,7 @@ function Export-WingetShowToJson {
     $metadata = $null
 
     foreach ($arch in $architecturesToProbe) {
-        $run = Invoke-WingetShowRaw -WingetId $wingetId -Architecture $arch
+        $run = Invoke-WingetShowRaw -wingetId $wingetId -architecture $arch
         if ($run.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($run.Output)) {
             Write-Log "winget show -a $arch returned no output (exit: $($run.ExitCode))" -Tag "Debug"
             continue
@@ -401,7 +414,7 @@ function Export-WingetShowToJson {
         if ($null -eq $normalized) { continue }
         if ($normalized -match 'No package found|No applicable package|No applicable installer') { continue }
 
-        $parsed = ConvertFrom-WingetShowOutput -NormalizedOutput $normalized
+        $parsed = ConvertFrom-WingetShowOutput -normalizedOutput $normalized
         $parsed.Obj['Id'] = $wingetId
 
         if ($parsed.HasInstaller) {
@@ -436,6 +449,7 @@ function Export-WingetShowToJson {
     $infoOut['PrivacyUrl']   = if ($obj['PrivacyUrl']) { $obj['PrivacyUrl'] } else { $null }
     $infoOut['Architectures'] = @($supportedArches.ToArray())
     $infoOut['WingetId']     = $wingetId
+    $infoOut['InstallContext'] = if ($installContext -match '^(system|user)$') { $installContext } else { 'system' }
     $infoOut['FetchedAt']    = (Get-Date -Format 'o')
 
     $jsonContent = $infoOut | ConvertTo-Json -Depth 5 -Compress:$false
@@ -493,8 +507,11 @@ foreach ($row in $rows) {
     $rowIndex++
     $appName   = ($row.ApplicationName).ToString().Trim()
     $wingetId  = ($row.WingetAppId).ToString().Trim()
+    $installContext = if ($row.PSObject.Properties['InstallContext']) { ($row.InstallContext).ToString().Trim() } else { 'system' }
+    $installOverride = if ($row.PSObject.Properties['InstallOverride']) { ($row.InstallOverride).ToString().Trim() } else { '' }
+    if ($installContext -notmatch '^(system|user)$') { $installContext = 'system' }
 
-    Write-Log "Row $rowIndex : appName='$appName' | wingetId='$wingetId'" -Tag "Debug"
+    Write-Log "Row $rowIndex : appName='$appName' | wingetId='$wingetId' | installContext='$installContext'" -Tag "Debug"
 
     if ([string]::IsNullOrWhiteSpace($appName) -or [string]::IsNullOrWhiteSpace($wingetId)) {
         Write-Log 'Skipping row with missing ApplicationName or WingetAppId.' -Tag 'Error'
@@ -524,7 +541,17 @@ foreach ($row in $rows) {
     }
 
     if ($fetchWingetShow) {
-        Export-WingetShowToJson -wingetId $wingetId -appFolder $appFolder -applicationName $appName
+        Export-WingetShowToJson -wingetId $wingetId -appFolder $appFolder -applicationName $appName -installContext $installContext
+    } else {
+        $infoPath = Join-Path $appFolder 'info.json'
+        if (Test-Path -LiteralPath $infoPath) {
+            $info = Get-Content -LiteralPath $infoPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if (-not $info.PSObject.Properties['InstallContext']) {
+                $info | Add-Member -NotePropertyName 'InstallContext' -NotePropertyValue $installContext -Force
+                $info | ConvertTo-Json -Depth 5 -Compress:$false | Set-Content -LiteralPath $infoPath -Encoding UTF8
+                Write-Log "Patched info.json with InstallContext=$installContext" -Tag "Debug"
+            }
+        }
     }
 
     # When keepPlainScripts: put install/uninstall under apps\$appName\scripts\; detection.ps1 stays in app root.
@@ -541,9 +568,9 @@ foreach ($row in $rows) {
 
     Write-Log "Generated script paths: install=$genInstall | uninstall=$genUninstall | detect=$genDetect" -Tag "Debug"
 
-    Set-Placeholders -templatePath $tplInstall   -outputPath $genInstall   -applicationName $appName -wingetAppId $wingetId
-    Set-Placeholders -templatePath $tplUninstall -outputPath $genUninstall -applicationName $appName -wingetAppId $wingetId
-    Set-Placeholders -templatePath $tplDetect    -outputPath $genDetect    -applicationName $appName -wingetAppId $wingetId
+    Set-Placeholders -templatePath $tplInstall   -outputPath $genInstall   -applicationName $appName -wingetAppId $wingetId -installContext $installContext -installOverride $installOverride
+    Set-Placeholders -templatePath $tplUninstall -outputPath $genUninstall -applicationName $appName -wingetAppId $wingetId -installContext $installContext
+    Set-Placeholders -templatePath $tplDetect    -outputPath $genDetect    -applicationName $appName -wingetAppId $wingetId -installContext $installContext
 
     # Package only install.ps1 and uninstall.ps1 in apps\temp; then move .intunewin to app folder and delete temp.
     $tempRoot   = Join-Path $outputRoot 'temp'

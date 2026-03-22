@@ -2,7 +2,7 @@
 
 This project provides three PowerShell scripts (`detection.ps1`, `install.ps1`, and `uninstall.ps1`) to deploy **Win32 apps using Winget** via **Microsoft Intune**.
 
-All scripts share a common structure and require two variables to be defined at the top:
+All scripts share a common structure and require variables to be defined at the top. Values are injected from `apps.csv` by `package.ps1`.
 
 ---
 
@@ -11,13 +11,15 @@ All scripts share a common structure and require two variables to be defined at 
 | Variable | Used in | Description |
 |----------|---------|-------------|
 | `$applicationName` | All | Display name of the app (e.g. for logs and Intune) |
-| `$wingetAppID` | All | Winget package ID (e.g. `7zip.7zip`) |
+| `$wingetAppId` | All | Winget package ID (e.g. `7zip.7zip`) |
+| `$installContext` | All | `system` or `user` – controls winget invocation mode (see below) |
 
 **Example:**
 
 ```powershell
 $applicationName = "7-Zip"
-$wingetAppID     = "7zip.7zip"
+$wingetAppId     = "7zip.7zip"
+$installContext  = "system"
 ```
 
 ---
@@ -26,7 +28,7 @@ $wingetAppID     = "7zip.7zip"
 
 | Variable | Used in | Description |
 |----------|---------|-------------|
-| `$installOverride` | install.ps1 | String passed directly to the installer via `--override` (e.g. `/silent STORE0='...'`). Leave empty for none. Use **single quotes** inside the value when it contains spaces or quotes so Winget receives one argument. |
+| `$installOverride` | install.ps1 | Set from `apps.csv` InstallOverride column when non-empty. String passed to `winget install --override`. Leave empty for none. |
 
 **Example (Citrix-style override):**
 
@@ -55,7 +57,7 @@ Name              Id                  Version            Match              Sour
 7-Zip Alpha (msi) 7zip.7zip.Alpha.msi 24.01.00.0                            winget
 ```
 
-Copy the **Id** into `$wingetAppID` and the **Name** into `$applicationName`.
+Copy the **Id** into `$wingetAppId` and the **Name** into `$applicationName`.
 
 ---
 
@@ -101,7 +103,7 @@ In [Intune Admin Center](https://intune.microsoft.com):
 
 - **Apps** → **Windows** → **Create** → **Windows app (Win32)**
 - Upload the `.intunewin` file.
-- Use `winget show "<wingetAppID>"` to fill **Publisher**, **Description**, **Homepage**, etc.
+- Use `winget show "<wingetAppId>"` to fill **Publisher**, **Description**, **Homepage**, etc.
 
 > 💡 Search online for a logo to improve appearance in **Company Portal**.
 
@@ -111,9 +113,9 @@ In [Intune Admin Center](https://intune.microsoft.com):
 
 | Setting | Value |
 |--------|--------|
-| **Install command** 🟢 | `%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\install.ps1` |
-| **Uninstall command** 🔴 | `%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\uninstall.ps1` |
-| **Install behavior** | `System` |
+| **Install command** 🟢 | **System context:** `%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\install.ps1`<br>**User context:** `powershell.exe -ExecutionPolicy Bypass .\install.ps1` |
+| **Uninstall command** 🔴 | **System context:** `%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\uninstall.ps1`<br>**User context:** `powershell.exe -ExecutionPolicy Bypass .\uninstall.ps1` |
+| **Install behavior** | `System` or `User` (matches `$installContext`) |
 | **Device restart behavior** | `Determine behavior based on return codes` → `0` = Success, `1` = Failed |
 
 ---
@@ -140,7 +142,8 @@ Then complete **Assignments** to target your groups.
 
 ### 🧩 Shared Behavior
 
-- **Winget path:** Resolved from `%ProgramW6432%\WindowsApps` (x64, then arm64).
+- **Install context – system:** Winget path is resolved from `%ProgramW6432%\WindowsApps` (x64, then arm64). Uses `--scope machine`. Required when Intune runs scripts as SYSTEM.
+- **Install context – user:** Calls `winget` directly (PATH / App Execution Alias). Uses `--scope user`. Use when deploying in user context (script runs as the logged-in user).
 - **Winget version check:** Each script runs `winget --version`. If it fails, the script logs a friendly message, **exits with code 0** (so Intune does not mark the app as failed and can retry after reboot), and suggests restarting the PC or running a Winget repair script (e.g. [Winget - System Context](https://github.com/Barg0/Intune-Platform-Scripts/blob/main/Winget%20-%20System%20Context.ps1)).
 - **No built-in Winget repair:** Repair (e.g. PATH for Winget dependencies) is handled by a separate platform script; these templates do not modify PATH or run repair.
 
@@ -177,7 +180,7 @@ Files: `detection.log`, `install.log`, `uninstall.log`.
 
 - Resolves Winget path and checks Winget version.
 - Sets **UTF-8** console encoding around `winget list` so Unicode app names are captured correctly.
-- Runs `winget list -e --id $wingetAppID`.
+- Runs `winget list -e --id $wingetAppId`.
 - **Exit 0** if the package is listed (app detected); **Exit 1** if not found or on error.
 
 **Example (not installed):**
@@ -215,9 +218,9 @@ Files: `detection.log`, `install.log`, `uninstall.log`.
 ### 📥 `install.ps1`
 
 - Resolves Winget path and checks Winget version (exits 0 if check fails, so Intune can retry).
-- **First attempt:** `winget install -e --id $wingetAppID --silent --skip-dependencies --scope machine ...` (optionally with `--override $installOverride`).
+- **First attempt:** `winget install -e --id $wingetAppId --silent --skip-dependencies --scope machine` (or `--scope user` for user context) with optional `--override $installOverride`.
 - **Exit code handling:** Uses a WinGet exit-code map (Success, RetryScope, RetryLater, Fail). References: [FileWave – Troubleshooting WinGet](https://kb.filewave.com/books/microsoft-windows-package-manager-winget/page/troubleshooting-errors-with-winget), [Microsoft – winget return codes](https://github.com/microsoft/winget-cli/blob/master/doc/windows/package-manager/winget/returnCodes.md).
-- **RetryScope:** If “no applicable installer for scope”, retries **without** `--scope` (user scope).
+- **RetryScope:** If “no applicable installer for scope”, retries **without** `--scope` (some packages only support one scope).
 - **RetryLater:** Transient errors (app in use, disk full, reboot required, etc.) → script **exits 0** so Intune can retry later.
 - **Success:** Exit 0 on success or “already installed” / “higher version installed”.
 
@@ -242,9 +245,9 @@ Files: `detection.log`, `install.log`, `uninstall.log`.
 ### 🗑️ `uninstall.ps1`
 
 - Resolves Winget path and checks Winget version (exits 0 if check fails).
-- **First attempt:** `winget uninstall -e --id $wingetAppID --silent --scope machine ...`
-- **Retry:** If needed, retries without `--scope` (e.g. user-scoped install).
-- **Success:** Exit 0 on success or “no packages found” (already uninstalled).
+- **First attempt:** `winget uninstall -e --id $wingetAppId --silent --scope machine` (or `--scope user` for user context).
+- **Retry without scope:** If "no packages found" with scope, retries **without** `--scope` before treating as success. Matches install workaround: when install fell back to no-scope (e.g. Proton Authenticator), uninstall must try no-scope to find and remove the package.
+- **Success:** Exit 0 on success or “no packages found” (already uninstalled) after trying both scoped and unscoped.
 
 **Example (success):**
 

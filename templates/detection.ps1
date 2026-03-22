@@ -3,7 +3,8 @@ $scriptStartTime = Get-Date
 
 # ---------------------------[ Configuration ]---------------------------
 $applicationName  = "__APPLICATION_NAME__"
-$wingetAppID      = "__WINGET_APP_ID__"
+$wingetAppId      = "__WINGET_APP_ID__"
+$installContext   = "__INSTALL_CONTEXT__"
 
 $logFileName      = "detection.log"
 
@@ -31,6 +32,7 @@ function Write-Log {
 
     if (-not $log) { return }
 
+    # Per-tag switches
     if (($Tag -eq "Debug") -and (-not $logDebug)) { return }
     if (($Tag -eq "Get")   -and (-not $logGet))   { return }
     if (($Tag -eq "Run")   -and (-not $logRun))   { return }
@@ -134,9 +136,9 @@ function Get-WingetPath {
 # If version check fails we exit 0 so Intune does not flag the app as failed and can retry after reboot.
 function Test-WingetVersion {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$WingetPath)
+    param([Parameter(Mandatory)][string]$wingetPath)
 
-    $versionOutput = & $WingetPath --version 2>&1
+    $versionOutput = & $wingetPath --version 2>&1
     $exitCode = $LASTEXITCODE
     $versionString = ($versionOutput | Out-String).Trim()
     $isHealthy = ($exitCode -eq 0)
@@ -147,16 +149,17 @@ function Test-WingetVersion {
 # ---------------------------[ Script Start ]---------------------------
 Write-Log "======== Detection Script Started ========" -Tag "Start"
 Write-Log "ComputerName: $env:COMPUTERNAME | User: $env:USERNAME | Application: $applicationName" -Tag "Info"
-Write-Log "Winget App ID: $wingetAppID" -Tag "Info"
+Write-Log "Winget App ID: $wingetAppId | Install context: $installContext" -Tag "Info"
 
 # ---------------------------[ App Detection ]---------------------------
 # WinGet list: exit 0 = package found; -1978335212 (NO_APPLICATIONS_FOUND) = not installed
-try {
-    Write-Log "Entering detection try block. wingetAppID=$wingetAppID" -Tag "Debug"
-    $wingetPath = Get-WingetPath
-    Write-Log "Resolved Winget path." -Tag "Get"
+$isUserContext = ($installContext -eq 'user')
+$wingetExe = if ($isUserContext) { 'winget' } else { (Get-WingetPath) }
+if (-not $isUserContext) { Write-Log "Resolved Winget path (system context)." -Tag "Get" }
 
-    $wingetCheck = Test-WingetVersion -WingetPath $wingetPath
+try {
+    Write-Log "Entering detection try block. wingetAppId=$wingetAppId | context=$installContext" -Tag "Debug"
+    $wingetCheck = Test-WingetVersion -wingetPath $wingetExe
     Write-Log "Winget version: $($wingetCheck.Version)" -Tag "Info"
     if (-not $wingetCheck.IsHealthy) {
         Write-Log "Winget version check failed. Restart your computer so Intune can retry, or run the Winget repair script (e.g. Winget - System Context)." -Tag "Error"
@@ -165,15 +168,15 @@ try {
     }
     Write-Log "Winget version check passed." -Tag "Debug"
 
-    Write-Log "Checking installed packages for: $wingetAppID" -Tag "Run"
-    Write-Log "Invoking: winget list -e --id $wingetAppID --accept-source-agreements" -Tag "Debug"
+    Write-Log "Checking installed packages for: $wingetAppId" -Tag "Run"
+    Write-Log "Invoking: winget list -e --id $wingetAppId --accept-source-agreements" -Tag "Debug"
 
     # Set UTF-8 encoding so winget output (e.g. app names with Unicode) is captured correctly.
     # Prevents garbled characters in Debug logs and ensures -match works reliably.
     $previousOutputEncoding = [Console]::OutputEncoding
     [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
     try {
-        $installedOutput = & $wingetPath list -e --id $wingetAppID --accept-source-agreements
+        $installedOutput = & $wingetExe list -e --id $wingetAppId --accept-source-agreements
         $wingetExitCode  = $LASTEXITCODE
     }
     finally {

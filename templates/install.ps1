@@ -3,11 +3,13 @@ $scriptStartTime = Get-Date
 
 # ---------------------------[ Configuration ]---------------------------
 $applicationName  = "__APPLICATION_NAME__"
-$wingetAppID      = "__WINGET_APP_ID__"
+$wingetAppId      = "__WINGET_APP_ID__"
+$installContext   = "__INSTALL_CONTEXT__"
 
 # Optional: pass a string directly to the installer (e.g. "/silent /configID=XXXXX"). Leave empty for none.
 # See: https://learn.microsoft.com/en-us/windows/package-manager/winget/install (--override)
-$installOverride = ""
+# Set from apps.csv InstallOverride column when non-empty.
+$installOverride  = "__INSTALL_OVERRIDE__"
 
 $logFileName      = "install.log"
 
@@ -35,6 +37,7 @@ function Write-Log {
 
     if (-not $log) { return }
 
+    # Per-tag switches
     if (($Tag -eq "Debug") -and (-not $logDebug)) { return }
     if (($Tag -eq "Get")   -and (-not $logGet))   { return }
     if (($Tag -eq "Run")   -and (-not $logRun))   { return }
@@ -203,11 +206,12 @@ function Get-WingetPath {
 
 # ---------------------------[ Winget Version Check ]---------------------------
 # If version check fails we exit 0 so Intune does not flag the app as failed and can retry after reboot.
+# Accepts full path (system) or "winget" (user context, resolved via PATH).
 function Test-WingetVersion {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$WingetPath)
+    param([Parameter(Mandatory)][string]$wingetPath)
 
-    $versionOutput = & $WingetPath --version 2>&1
+    $versionOutput = & $wingetPath --version 2>&1
     $exitCode = $LASTEXITCODE
     $versionString = ($versionOutput | Out-String).Trim()
     $isHealthy = ($exitCode -eq 0)
@@ -218,15 +222,17 @@ function Test-WingetVersion {
 # ---------------------------[ Script Start ]---------------------------
 Write-Log "======== Install Script Started ========" -Tag "Start"
 Write-Log "ComputerName: $env:COMPUTERNAME | User: $env:USERNAME | Application: $applicationName" -Tag "Info"
-Write-Log "Winget App ID: $wingetAppID" -Tag "Info"
+Write-Log "Winget App ID: $wingetAppId | Install context: $installContext" -Tag "Info"
 
 # ---------------------------[ Winget Install ]---------------------------
-try {
-    Write-Log "Entering install try block. wingetAppID=$wingetAppID" -Tag "Debug"
-    $wingetPath = Get-WingetPath
-    Write-Log "Resolved Winget path." -Tag "Get"
+# User context: call winget directly (available in PATH). System context: resolve path from WindowsApps.
+$isUserContext = ($installContext -eq 'user')
+$wingetExe = if ($isUserContext) { 'winget' } else { (Get-WingetPath) }
+if (-not $isUserContext) { Write-Log "Resolved Winget path (system context)." -Tag "Get" }
 
-    $wingetCheck = Test-WingetVersion -WingetPath $wingetPath
+try {
+    Write-Log "Entering install try block. wingetAppId=$wingetAppId | context=$installContext" -Tag "Debug"
+    $wingetCheck = Test-WingetVersion -wingetPath $wingetExe
     Write-Log "Winget version: $($wingetCheck.Version)" -Tag "Info"
     if (-not $wingetCheck.IsHealthy) {
         Write-Log "Winget version check failed. Restart your computer so Intune can retry, or run the Winget repair script (e.g. Winget - System Context)." -Tag "Error"
@@ -239,30 +245,30 @@ try {
     # Workaround flags – each is applied at most once. The engine loops until success or
     # no more workarounds remain. Every winget invocation is wrapped with the in-progress
     # wait loop so that "another installation in progress" is handled consistently.
-    $useScope           = $true   # start with --scope machine
-    $useSource          = $false  # start without --source winget
-    $triedNoScope       = $false
-    $triedSource        = $false
+    $defaultScope      = if ($isUserContext) { 'user' } else { 'machine' }
+    $useScope          = $true
+    $useSource         = $false
+    $triedNoScope      = $false
+    $triedSource       = $false
 
     $maxInProgressRetries   = 15
     $inProgressDelaySeconds = 120
 
-    if ($installOverride) {
+    if (-not [string]::IsNullOrWhiteSpace($installOverride)) {
         Write-Log "Using install override: $installOverride" -Tag "Info"
     }
 
     while ($true) {
-        # --- Build argument list for this attempt ---
-        $currentArgs = @('install', '-e', '--id', $wingetAppID, '--silent', '--skip-dependencies',
+        $currentArgs = @('install', '-e', '--id', $wingetAppId, '--silent', '--skip-dependencies',
                          '--accept-package-agreements', '--accept-source-agreements', '--force')
-        if ($useScope)  { $currentArgs += '--scope',  'machine' }
+        if ($useScope)  { $currentArgs += '--scope', $defaultScope }
         if ($useSource) { $currentArgs += '--source', 'winget'  }
-        if ($installOverride) {
+        if (-not [string]::IsNullOrWhiteSpace($installOverride)) {
             $currentArgs += '--override'
             $currentArgs += $installOverride
         }
 
-        $scopeLabel  = if ($useScope)  { "scope machine" } else { "no scope" }
+        $scopeLabel  = if ($useScope)  { "scope $defaultScope" } else { "no scope" }
         $sourceLabel = if ($useSource) { ", source winget" } else { "" }
         $attemptLabel = "$scopeLabel$sourceLabel"
 
@@ -279,9 +285,9 @@ try {
             Write-Log "$runLabel." -Tag "Run"
             Write-Log "Invoking: winget $($currentArgs -join ' ')" -Tag "Debug"
 
-            & $wingetPath @currentArgs
+            & $wingetExe @currentArgs
             $exitCode = $LASTEXITCODE
-            $exitInfo = Get-WingetExitCodeInfo -ExitCode $exitCode
+            $exitInfo = Get-WingetExitCodeInfo -exitCode $exitCode
             Write-Log "Winget exit code: $exitCode ($($exitInfo.Description)); Category=$($exitInfo.Category)" -Tag "Info"
 
             if ($exitCode -ne -1978334974) { break }
@@ -315,7 +321,7 @@ try {
         $workaroundApplied = $false
 
         if ($exitInfo.Category -eq "RetryScope" -and -not $triedNoScope) {
-            Write-Log "No applicable installer for machine scope; retrying without --scope." -Tag "Info"
+            Write-Log "No applicable installer for scope $defaultScope; retrying without --scope." -Tag "Info"
             $useScope      = $false
             $triedNoScope  = $true
             $workaroundApplied = $true
