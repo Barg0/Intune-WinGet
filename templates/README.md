@@ -1,297 +1,633 @@
-# 🚀 Win32 – App Deployment (Winget + Intune)
+# 🧩 Win32 App Templates -- What Runs on the Device
 
-This project provides three PowerShell scripts (`detection.ps1`, `install.ps1`, and `uninstall.ps1`) to deploy **Win32 apps using Winget** via **Microsoft Intune**.
+This folder contains three PowerShell script templates that **run on target devices** when Intune deploys, detects, or uninstalls a Win32 app. These scripts are the core of the system: they call WinGet, handle retries, manage scope fallbacks, and write detailed logs.
 
-All scripts share a common structure and require variables to be defined at the top. Values are injected from `apps.csv` by `package.ps1`.
+You do not normally need to edit these files. `package.ps1` reads your `apps.csv` and generates per-app copies with the correct values filled in. But if you want to understand what happens on the device, customize behavior, use the scripts standalone, or troubleshoot a failed deployment, this document covers everything.
 
 ---
 
-## 📋 Required Variables
+## 📋 Table of Contents
 
-| Variable | Used in | Description |
-|----------|---------|-------------|
-| `$applicationName` | All | Display name of the app (e.g. for logs and Intune) |
-| `$wingetAppId` | All | Winget package ID (e.g. `7zip.7zip`) |
-| `$installContext` | All | `system` or `user` – controls winget invocation mode (see below) |
+- [📋 What's in Here](#-whats-in-here)
+- [🔧 How Values Are Injected](#-how-values-are-injected)
+- [🛠️ Using Scripts Standalone](#-using-scripts-standalone)
+- [🧪 Testing Locally with PsExec](#-testing-locally-with-psexec)
+- [⚙️ Manual Intune Upload Settings](#-manual-intune-upload-settings)
+- [🔍 Script Behavior -- detection.ps1](#-script-behavior----detectionps1)
+- [📥 Script Behavior -- install.ps1](#-script-behavior----installps1)
+- [🗑️ Script Behavior -- uninstall.ps1](#-script-behavior----uninstallps1)
+- [📊 WinGet Exit Code Reference](#-winget-exit-code-reference)
+- [📋 Logging](#-logging)
+- [🔒 WinGet Version Check and Repair](#-winget-version-check-and-repair)
+- [🔬 Install Override Deep Dive](#-install-override-deep-dive)
+- [🐛 Troubleshooting](#-troubleshooting)
+- [📚 References](#-references)
 
-**Example:**
+---
+
+## 📋 What's in Here
+
+| Script | Purpose | When Intune runs it |
+|--------|---------|---------------------|
+| **detection.ps1** | Checks if the app is installed | Before install, periodically after install, before uninstall |
+| **install.ps1** | Installs the app via WinGet | When deploying Required, or when user clicks Install in Company Portal |
+| **uninstall.ps1** | Removes the app via WinGet | When uninstalling the app from Intune |
+
+---
+
+## 🔧 How Values Are Injected
+
+Each template has placeholders at the top. When `package.ps1` generates the per-app scripts, it replaces these placeholders with values from `apps.csv`.
+
+**Template (before packaging):**
 
 ```powershell
-$applicationName = "7-Zip"
-$wingetAppId     = "7zip.7zip"
-$installContext  = "system"
+$applicationName  = '__APPLICATION_NAME__'
+$wingetAppId      = '__WINGET_APP_ID__'
+$installContext   = '__INSTALL_CONTEXT__'
+$installOverride  = '__INSTALL_OVERRIDE__'    # install.ps1 only
 ```
 
----
-
-## 🔧 Optional Variables
-
-| Variable | Used in | Description |
-|----------|---------|-------------|
-| `$installOverride` | install.ps1 | Set from `apps.csv` InstallOverride column when non-empty. String passed to `winget install --override`. Leave empty for none. |
-
-**Example (Citrix-style override):**
+**Generated script (after packaging):**
 
 ```powershell
-$installOverride = "/silent STORE0='AppStore;https://testserver.net/Citrix/MyStore/discovery;on;HR App Store'"
+$applicationName  = '7-Zip'
+$wingetAppId      = '7zip.7zip'
+$installContext   = 'system'
+$installOverride  = ''
 ```
+
+| Placeholder | Used in | Source | Description |
+|-------------|---------|--------|-------------|
+| `__APPLICATION_NAME__` | All three scripts | `apps.csv` > ApplicationName | Display name used in logs and log file paths |
+| `__WINGET_APP_ID__` | All three scripts | `apps.csv` > WingetAppId | WinGet package ID passed to `winget install/uninstall/list` |
+| `__INSTALL_CONTEXT__` | All three scripts | `apps.csv` > InstallContext | `system` or `user` -- controls how WinGet is invoked |
+| `__INSTALL_OVERRIDE__` | install.ps1 only | `apps.csv` > InstallOverride | Extra arguments for `winget install --override` |
+
+Values are stored in single-quoted PowerShell strings. Apostrophes in names (e.g. `Dell's Optimizer`) are automatically escaped as `''`. Double quotes in override values (e.g. `/v "/qn"`) are preserved as literal characters inside single quotes.
 
 ---
 
-## 🔍 Finding a Winget App ID
+## 🛠️ Using Scripts Standalone
 
-Open PowerShell and run:
+You can use these scripts without `package.ps1` or `deploy.ps1` -- for example, to deploy a single app manually or to integrate them into a different deployment system.
+
+### Step 1: Copy the templates
+
+Copy all three scripts from this folder to a new folder:
+
+```
+MyApp/
+├── install.ps1
+├── uninstall.ps1
+└── detection.ps1
+```
+
+### Step 2: Replace the placeholders
+
+Open each script and edit the variables at the top. Replace the `__PLACEHOLDER__` values with real values:
 
 ```powershell
-winget search "AppName"
+$applicationName  = 'Google Chrome'
+$wingetAppId      = 'Google.Chrome'
+$installContext   = 'system'
+$installOverride  = ''                    # install.ps1 only
 ```
 
-Example output:
-```PowerShell
-PS C:\> winget search "7-Zip"
-Name              Id                  Version            Match              Source
-----------------------------------------------------------------------------------
-7-Zip             7zip.7zip           24.09              ProductCode: 7-zip winget
-7-Zip ZS          mcmilk.7zip-zstd    24.09 ZS v1.5.7 R1 Tag: 7-zip         winget
-7-Zip Alpha (exe) 7zip.7zip.Alpha.exe 24.01                                 winget
-7-Zip Alpha (msi) 7zip.7zip.Alpha.msi 24.01.00.0                            winget
+How to find the WinGet App ID:
+
+```powershell
+winget search "Google Chrome"
 ```
 
-Copy the **Id** into `$wingetAppId` and the **Name** into `$applicationName`.
-
----
-
-## 📦 Packaging the Win32 App
-
-Use the official [Microsoft Win32 Content Prep Tool](https://github.com/Microsoft/Microsoft-Win32-Content-Prep-Tool) to package your scripts.
-
-📚 [Prepare Win32 app content](https://learn.microsoft.com/en-us/intune/intune-service/apps/apps-win32-prepare) (Microsoft Docs)
-
-### 📁 Folder Structure Example
-
 ```
-.
-├─📁 7-Zip
-│  ├──📜 install.ps1
-│  └──📜 uninstall.ps1
+Name           Id             Version  Source
+----------------------------------------------
+Google Chrome  Google.Chrome  133.0... winget
 ```
 
-### 📝 Packaging Steps
+Use the **Id** column value.
 
-Run `IntuneWinAppUtil.exe` from CMD:
+### Step 3: Run the scripts directly
+
+You can now run these scripts directly from PowerShell:
+
+```powershell
+# Install the app
+.\install.ps1
+
+# Check if it's detected
+.\detection.ps1
+
+# Uninstall it
+.\uninstall.ps1
+```
+
+The scripts will work exactly the same as when Intune runs them. They write logs to `%ProgramData%\IntuneLogs\Applications\<ApplicationName>\`.
+
+### Step 4 (optional): Package for Intune
+
+If you want to deploy through Intune manually, package the scripts using [IntuneWinAppUtil.exe](https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool/releases):
 
 ```cmd
-C:\Microsoft-Win32-Content-Prep-Tool>IntuneWinAppUtil.exe
-Please specify the source folder: C:\Win32WingetDeployment\7-Zip
-Please specify the setup file: install.ps1
-Please specify the output folder: C:\Win32WingetDeployment
+IntuneWinAppUtil.exe -c "C:\Path\To\MyApp" -s install.ps1 -o "C:\Path\To\Output"
 ```
 
-Rename the output to match your app:
-
-```
-install.intunewin → 7-Zip.intunewin
-```
+This creates `install.intunewin` containing both `install.ps1` and `uninstall.ps1`. Upload it to Intune manually (see [Manual Intune Upload Settings](#manual-intune-upload-settings) below).
 
 ---
 
-## 🛠️ Deploying in Intune
+## 🧪 Testing Locally with PsExec
 
-### 1️⃣ App Information
+Before deploying through Intune, test the scripts on a VM or test machine. This catches issues before they affect production devices.
 
-In [Intune Admin Center](https://intune.microsoft.com):
+### Testing in SYSTEM context (simulates what Intune does)
 
-- **Apps** → **Windows** → **Create** → **Windows app (Win32)**
-- Upload the `.intunewin` file.
-- Use `winget show "<wingetAppId>"` to fill **Publisher**, **Description**, **Homepage**, etc.
+Download [PsExec](https://learn.microsoft.com/en-us/sysinternals/downloads/psexec) from Sysinternals. Then open an **elevated** Command Prompt (Run as Administrator) and run:
 
-> 💡 Search online for a logo to improve appearance in **Company Portal**.
+```cmd
+psexec -i -s powershell.exe
+```
+
+This opens a PowerShell window running as the SYSTEM account -- the same context Intune uses for system-context apps. You can verify with:
+
+```powershell
+whoami
+# Output: nt authority\system
+```
+
+Now navigate to the scripts folder and test the full cycle:
+
+```powershell
+# 1. Install the app
+cd "C:\Intune-WinGet\apps\Google Chrome\scripts"
+.\install.ps1
+
+# 2. Verify detection works
+.\detection.ps1
+# Expected: exit code 0 (echo $LASTEXITCODE to check)
+
+# 3. Uninstall the app
+.\uninstall.ps1
+
+# 4. Verify detection reports not installed
+.\detection.ps1
+# Expected: exit code 1
+```
+
+### Testing in user context
+
+For apps with `$installContext = 'user'`, no PsExec is needed. Just open a normal PowerShell window and run the scripts directly.
+
+### Checking the logs
+
+After running, check the logs:
+
+```powershell
+Get-Content "$env:ProgramData\IntuneLogs\Applications\Google Chrome\install.log"
+```
+
+Look for:
+- `[  Success ]` -- operation completed successfully
+- `[  Error   ]` -- something went wrong (the log includes the WinGet exit code and description)
+- `[  Info    ]` -- retry and fallback information
+
+### Common testing issues
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| `winget` not found in SYSTEM context | WinGet UWP dependencies not available to SYSTEM | Deploy [Winget-SystemContext](https://github.com/Barg0/Intune-Platform-Scripts/tree/main/Winget-SystemContext) to register them |
+| Detection returns wrong result | WinGet package ID doesn't match what's installed | Run `winget list` in the same context (SYSTEM or user) and verify the ID |
+| Override not applied | Override contains unescaped characters | Check the `install.log` for the exact command being invoked (enable `$logDebug = $true` for full details) |
 
 ---
 
-### 2️⃣ Program Settings ⚙️
+## ⚙️ Manual Intune Upload Settings
+
+When uploading a `.intunewin` package manually in [Intune Admin Center](https://intune.microsoft.com) > **Apps** > **Windows** > **Add** > **Windows app (Win32)**, use these settings.
+
+### App Information
+
+| Field | Value |
+|-------|-------|
+| Name | Your app name (e.g. `Google Chrome`) |
+| Description | From `winget show <id>` or your own |
+| Publisher | From `winget show <id>` |
+| App version | `WinGet` (WinGet handles versioning) |
+| Logo | Optional PNG |
+
+### Program
+
+**For system context apps:**
 
 | Setting | Value |
-|--------|--------|
-| **Install command** 🟢 | **System context:** `%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\install.ps1`<br>**User context:** `powershell.exe -ExecutionPolicy Bypass .\install.ps1` |
-| **Uninstall command** 🔴 | **System context:** `%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\uninstall.ps1`<br>**User context:** `powershell.exe -ExecutionPolicy Bypass .\uninstall.ps1` |
-| **Install behavior** | `System` or `User` (matches `$installContext`) |
-| **Device restart behavior** | `Determine behavior based on return codes` → `0` = Success, `1` = Failed |
+|---------|-------|
+| Install command | `%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\install.ps1` |
+| Uninstall command | `%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\uninstall.ps1` |
+| Install behavior | System |
+
+**For user context apps:**
+
+| Setting | Value |
+|---------|-------|
+| Install command | `powershell.exe -ExecutionPolicy Bypass .\install.ps1` |
+| Uninstall command | `powershell.exe -ExecutionPolicy Bypass .\uninstall.ps1` |
+| Install behavior | User |
+
+**Shared settings:**
+
+| Setting | Value |
+|---------|-------|
+| Device restart behavior | Determine behavior based on return codes |
+| Return codes | `0` = Success, `1` = Failed |
+| Max install time | 60 minutes |
+
+**Why `sysnative`?** When Intune runs a 32-bit process as SYSTEM, `%WINDIR%\System32` redirects to `SysWOW64` due to WoW64 file system redirection. The `sysnative` virtual path bypasses this and ensures 64-bit PowerShell is used, which is required for WinGet.
+
+### Requirements
+
+| Setting | Suggested value |
+|---------|-----------------|
+| OS architecture | 32-bit and 64-bit |
+| Minimum OS | Windows 10 21H1 |
+
+### Detection Rules
+
+| Setting | Value |
+|---------|-------|
+| Rules format | Use a custom detection script |
+| Script file | Upload `detection.ps1` |
+| Run script as 32-bit | No |
+| Enforce script signature check | No |
+
+The detection script exits `0` when the app is installed, `1` when not.
+
+### Assignments
+
+| Assignment type | Group | Notifications |
+|-----------------|-------|---------------|
+| Required | `Win - SW - RQ - <AppName>` | Hide all toast notifications |
+| Available | `Win - SW - AV - <AppName>` | Default |
 
 ---
 
-### 3️⃣ Requirements
+## 🔍 Script Behavior -- detection.ps1
 
-Configure as needed for your app, for example:
+**Purpose:** Check if the app is installed on the device.
 
-- **OS architecture:** 32-bit and 64-bit  
-- **Minimum OS:** Windows 10 20H2  
+### Flow
+
+1. Resolve WinGet path (system context: search `WindowsApps` for the latest `DesktopAppInstaller` folder; user context: use `winget` from PATH).
+2. Run `winget --version` to verify WinGet is working. If it fails, exit 0 (Intune retries later rather than marking the app as failed).
+3. Set console encoding to UTF-8 around the `winget list` call (handles Unicode characters in app names).
+4. Run `winget list -e --id <wingetAppId>` and capture the output.
+5. Parse the output: if the app ID appears in a results row, the app is detected.
+6. **Exit 0** = app installed. **Exit 1** = app not found.
+
+### Log example -- app not installed
+
+```
+2026-03-22 17:12:05 [  Start   ] ======== Detection Script Started ========
+2026-03-22 17:12:05 [  Info    ] ComputerName: VM-WIN11 | User: user | Application: Proton Authenticator
+2026-03-22 17:12:05 [  Info    ] Winget App ID: Proton.ProtonAuthenticator | Install context: user
+2026-03-22 17:12:05 [  Info    ] Winget version: v1.28.220
+2026-03-22 17:12:05 [  Run     ] Checking installed packages for: Proton.ProtonAuthenticator
+2026-03-22 17:12:05 [  Info    ] App NOT detected - Proton Authenticator is NOT installed.
+2026-03-22 17:12:05 [  Info    ] Exit Code: 1
+2026-03-22 17:12:05 [  End     ] ======== Detection Script Completed ========
+```
+
+### Log example -- app installed
+
+```
+2026-03-22 17:12:19 [  Start   ] ======== Detection Script Started ========
+2026-03-22 17:12:19 [  Info    ] ComputerName: VM-WIN11 | User: user | Application: Proton Authenticator
+2026-03-22 17:12:19 [  Info    ] Winget App ID: Proton.ProtonAuthenticator | Install context: user
+2026-03-22 17:12:19 [  Info    ] Winget version: v1.28.220
+2026-03-22 17:12:19 [  Run     ] Checking installed packages for: Proton.ProtonAuthenticator
+2026-03-22 17:12:20 [  Success ] App detected - Proton Authenticator IS installed.
+2026-03-22 17:12:20 [  Info    ] Exit Code: 0
+2026-03-22 17:12:20 [  End     ] ======== Detection Script Completed ========
+```
 
 ---
 
-### 4️⃣ Detection Rules
+## 📥 Script Behavior -- install.ps1
 
-- **Rules format:** `Use a custom detection script`
-- **Script file:** `detection.ps1`
+**Purpose:** Install the app using WinGet with automatic retry logic for common failure scenarios.
 
-Then complete **Assignments** to target your groups.
+### Flow
+
+1. Resolve WinGet path.
+2. Check WinGet version. If unhealthy, exit 0 (Intune retries later).
+3. Build the install command:
+
+```
+winget install -e --id <id> --silent --skip-dependencies
+    --accept-package-agreements --accept-source-agreements --force
+    --scope machine       (or --scope user)
+    --override "<value>"  (if InstallOverride is set)
+```
+
+4. Execute the command using `ProcessStartInfo` (not PowerShell splatting) to ensure override arguments with spaces and quotes are passed as a single argument to WinGet.
+5. Check the WinGet exit code and apply the retry engine:
+
+```
+Attempt 1: winget install --scope machine (or user)
+  |
+  | If "no applicable installer for scope" or "no packages found"
+  v
+Attempt 2: winget install (no --scope)
+  |
+  | If "pinned certificate mismatch"
+  v
+Attempt 3: winget install --source winget (no --scope)
+  |
+  | If "another installation in progress"
+  v
+Wait 2 minutes, retry (up to 15 times)
+  |
+  | If transient error (disk full, reboot needed, no network)
+  v
+Exit 0 (Intune retries later)
+  |
+  | If unrecoverable error (policy block, invalid parameter)
+  v
+Exit 1 (Intune marks as failed)
+```
+
+6. On success, exit 0.
+
+### Exit code categories
+
+| Category | What the script does | Example WinGet errors |
+|----------|---------------------|----------------------|
+| **Success** | Exit 0 | Installed successfully, already installed, higher version installed |
+| **RetryScope** | Remove `--scope` and try again | No applicable installer for scope, no packages found |
+| **RetrySource** | Add `--source winget` and try again | Pinned certificate mismatch |
+| **RetryLater** | Exit 0 so Intune can retry later | App in use, disk full, reboot needed, no network |
+| **Fail** | Exit 1 | Blocked by policy, invalid parameter, missing dependency |
+| **Unknown** | Log and treat as Fail | Any unmapped exit code |
+
+Each workaround (RetryScope, RetrySource) is tried at most once. They can chain: a RetrySource followed by a RetryScope produces a final attempt with `--source winget` and no `--scope`.
+
+### Log example -- install with scope fallback
+
+```
+2026-03-22 17:12:10 [  Start   ] ======== Install Script Started ========
+2026-03-22 17:12:10 [  Info    ] ComputerName: VM-WIN11 | User: user | Application: Proton Authenticator
+2026-03-22 17:12:10 [  Info    ] Winget App ID: Proton.ProtonAuthenticator | Install context: user
+2026-03-22 17:12:10 [  Info    ] Winget version: v1.28.220
+2026-03-22 17:12:10 [  Run     ] Installing (scope user).
+No applicable installer found; see logs for more details.
+2026-03-22 17:12:11 [  Info    ] Winget exit code: -1978335216 (No applicable installer for scope); Category=RetryScope
+2026-03-22 17:12:11 [  Info    ] No applicable installer for scope user; retrying without --scope.
+2026-03-22 17:12:11 [  Run     ] Installing (no scope).
+Successfully installed
+2026-03-22 17:12:16 [  Info    ] Winget exit code: 0 (Success); Category=Success
+2026-03-22 17:12:16 [  Success ] Installation completed successfully after workaround (no scope).
+2026-03-22 17:12:16 [  Info    ] Exit Code: 0
+2026-03-22 17:12:16 [  End     ] ======== Install Script Completed ========
+```
 
 ---
 
-## 📜 Script Behavior
+## 🗑️ Script Behavior -- uninstall.ps1
 
-### 🧩 Shared Behavior
+**Purpose:** Remove the app using WinGet with scope fallback.
 
-- **Install context – system:** Winget path is resolved from `%ProgramW6432%\WindowsApps` (x64, then arm64). Uses `--scope machine`. Required when Intune runs scripts as SYSTEM.
-- **Install context – user:** Calls `winget` directly (PATH / App Execution Alias). Uses `--scope user`. Use when deploying in user context (script runs as the logged-in user).
-- **Winget version check:** Each script runs `winget --version`. If it fails, the script logs a friendly message, **exits with code 0** (so Intune does not mark the app as failed and can retry after reboot), and suggests restarting the PC or running a Winget repair script (e.g. [Winget - System Context](https://github.com/Barg0/Intune-Platform-Scripts/blob/main/Winget%20-%20System%20Context.ps1)).
-- **No built-in Winget repair:** Repair (e.g. PATH for Winget dependencies) is handled by a separate platform script; these templates do not modify PATH or run repair.
+### Flow
+
+1. Resolve WinGet path.
+2. Check WinGet version. If unhealthy, exit 0 (Intune retries later).
+3. Run `winget uninstall -e --id <id> --silent --scope <scope>`.
+4. If "no packages found" (exit code -1978335212), retry without `--scope`. This handles the case where the install script fell back to installing without scope -- the uninstall must do the same.
+5. Exit 0 on success or when the package is genuinely not found (already uninstalled).
+
+### Why the scope fallback matters
+
+If `install.ps1` fell back to installing without `--scope` (e.g. because the app had no applicable installer for `--scope machine`), then the package was registered without a scope. Running `winget uninstall --scope machine` won't find it. The uninstall script automatically detects this and retries without `--scope`.
+
+### Log example -- uninstall with scope fallback
+
+```
+2026-03-22 17:15:01 [  Start   ] ======== Uninstall Script Started ========
+2026-03-22 17:15:01 [  Info    ] Winget App ID: Proton.ProtonAuthenticator | Install context: user
+2026-03-22 17:15:01 [  Info    ] Winget version: v1.28.220
+2026-03-22 17:15:01 [  Run     ] Uninstalling with scope user.
+No installed package found matching input criteria.
+2026-03-22 17:15:02 [  Info    ] Winget uninstall exit code: -1978335212; Category=Success
+2026-03-22 17:15:02 [  Info    ] No package found for scope user; retrying without --scope.
+2026-03-22 17:15:02 [  Run     ] Uninstalling with no scope.
+Successfully uninstalled
+2026-03-22 17:15:05 [  Success ] Uninstallation completed successfully after retry (no scope).
+2026-03-22 17:15:05 [  Info    ] Exit Code: 0
+2026-03-22 17:15:05 [  End     ] ======== Uninstall Script Completed ========
+```
 
 ---
 
-### 📊 Logging
+## 📊 WinGet Exit Code Reference
 
-All scripts use the same logging function with **tags** and **switches**:
+The install script maps WinGet exit codes to categories that determine retry behavior. Here is the full table:
 
-| Tag | Color (console) | Typical use |
-|-----|------------------|-------------|
+### Success (exit 0)
+
+| Exit Code | Description |
+|-----------|-------------|
+| `0` | Success |
+| `-1978335135` | Package already installed |
+| `-1978334963` | Another version already installed |
+| `-1978334962` | Higher version already installed |
+| `-1978334965` | Reboot initiated to finish installation |
+
+### RetryScope (retry without --scope)
+
+| Exit Code | Description |
+|-----------|-------------|
+| `-1978335216` | No applicable installer for scope |
+| `-1978335212` | No packages found |
+
+### RetrySource (retry with --source winget)
+
+| Exit Code | Description |
+|-----------|-------------|
+| `-1978335138` | Pinned certificate mismatch |
+
+### RetryLater (exit 0, Intune retries)
+
+| Exit Code | Description |
+|-----------|-------------|
+| `-1978334975` | Application is currently running |
+| `-1978334974` | Another installation in progress |
+| `-1978334973` | One or more file is in use |
+| `-1978334971` | Disk full |
+| `-1978334970` | Insufficient memory |
+| `-1978334969` | No network connectivity |
+| `-1978334967` | Reboot required to finish installation |
+| `-1978334966` | Reboot required then try again |
+| `-1978334959` | Package in use by another application |
+| `-1978335125` | Service busy or unavailable |
+
+### Fail (exit 1)
+
+| Exit Code | Description |
+|-----------|-------------|
+| `-1978335217` | No applicable installer |
+| `-1978334972` | Missing dependency |
+| `-1978334968` | Installation error; contact support |
+| `-1978334964` | Installation cancelled by user |
+| `-1978334961` | Blocked by organization policy |
+| `-1978334960` | Failed to install dependencies |
+| `-1978334958` | Invalid parameter |
+| `-1978334957` | Package not supported on this system |
+| `-1978334956` | Installer does not support upgrade |
+
+Any exit code not in this table is logged as **Unknown** and treated as Fail.
+
+---
+
+## 📋 Logging
+
+All three scripts use the same logging system with timestamped, color-coded, tagged entries written to both the console and a log file.
+
+### Log location on devices
+
+```
+%ProgramData%\IntuneLogs\Applications\<ApplicationName>\
+├── install.log
+├── uninstall.log
+└── detection.log
+```
+
+### Log tags
+
+| Tag | Color | Meaning |
+|-----|-------|---------|
 | Start / End | Cyan | Script start/end banners |
-| Get | Blue | Resolving Winget path, reading data |
-| Run | Magenta | Running winget install/list/uninstall |
-| Info | Yellow | General info (version, exit code, duration) |
-| Success | Green | Success messages |
-| Error | Red | Errors |
+| Get | Blue | Discovery operations (resolving paths, reading data) |
+| Run | Magenta | Execution (WinGet commands, Graph API calls) |
+| Info | Yellow | General status messages |
+| Success | Green | Successful operations |
+| Error | Red | Failures |
 | Debug | DarkYellow | Verbose troubleshooting (only when `$logDebug = $true`) |
 
-**Switches (top of script):**
+### Log switches (top of each script)
 
-- `$log` – Master switch for logging.
-- `$logDebug` – Enable **verbose Debug** output for troubleshooting.
-- `$logGet` – Enable `[Get]` lines.
-- `$logRun` – Enable `[Run]` lines.
-- `$enableLogFile` – Write logs to file.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `$log` | `$true` | Master switch -- disable all logging |
+| `$logDebug` | `$false` | Enable verbose Debug-tagged output |
+| `$logGet` | `$true` | Enable Get-tagged lines (path resolution, data reads) |
+| `$logRun` | `$true` | Enable Run-tagged lines (WinGet commands) |
+| `$enableLogFile` | `$true` | Write logs to file on disk |
 
-**Log location:** `%ProgramData%\IntuneLogs\Applications\<applicationName>\`  
-Files: `detection.log`, `install.log`, `uninstall.log`.
+### Collecting logs from devices
 
----
+Use Intune **Collect diagnostics** with a platform script that includes the log directory:
 
-### ✅ `detection.ps1`
+[Diagnostics - Custom Log File Directory](https://github.com/Barg0/Intune-Platform-Scripts/tree/main/Diagnostics%20-%20Custom%20Log%20File%20Directory)
 
-- Resolves Winget path and checks Winget version.
-- Sets **UTF-8** console encoding around `winget list` so Unicode app names are captured correctly.
-- Runs `winget list -e --id $wingetAppId`.
-- **Exit 0** if the package is listed (app detected); **Exit 1** if not found or on error.
-
-**Example (not installed):**
-
-```
-2025-05-31 11:08:45 [  Start   ] ======== Detection Script Started ========
-2025-05-31 11:08:45 [  Info    ] ComputerName: WS-81F690CC7DE6 | User: WS-81F690CC7DE6$ | Application: 7-Zip
-2025-05-31 11:08:45 [  Info    ] Winget App ID: 7zip.7zip
-2025-05-31 11:08:45 [  Get     ] Resolved Winget path.
-2025-05-31 11:08:45 [  Info    ] Winget version: v1.10.390
-2025-05-31 11:08:45 [  Run     ] Checking installed packages for: 7zip.7zip
-2025-05-31 11:08:46 [  Info    ] App NOT detected - 7-Zip is NOT installed.
-2025-05-31 11:08:46 [  Info    ] Script execution time: 00:00:01.17
-2025-05-31 11:08:46 [  Info    ] Exit Code: 1
-2025-05-31 11:08:46 [  End     ] ======== Detection Script Completed ========
-```
-
-**Example (installed):**
-
-```
-2025-05-31 11:11:42 [  Start   ] ======== Detection Script Started ========
-2025-05-31 11:11:42 [  Info    ] ComputerName: WS-81F690CC7DE6 | User: WS-81F690CC7DE6$ | Application: 7-Zip
-2025-05-31 11:11:42 [  Info    ] Winget App ID: 7zip.7zip
-2025-05-31 11:11:42 [  Get     ] Resolved Winget path.
-2025-05-31 11:11:42 [  Info    ] Winget version: v1.10.390
-2025-05-31 11:11:42 [  Run     ] Checking installed packages for: 7zip.7zip
-2025-05-31 11:11:43 [  Success ] App detected - 7-Zip IS installed.
-2025-05-31 11:11:43 [  Info    ] Script execution time: 00:00:01.15
-2025-05-31 11:11:43 [  Info    ] Exit Code: 0
-2025-05-31 11:11:43 [  End     ] ======== Detection Script Completed ========
-```
+Or read logs manually via remote PowerShell / RDP / another remote management tool.
 
 ---
 
-### 📥 `install.ps1`
+## 🔒 WinGet Version Check and Repair
 
-- Resolves Winget path and checks Winget version (exits 0 if check fails, so Intune can retry).
-- **First attempt:** `winget install -e --id $wingetAppId --silent --skip-dependencies --scope machine` (or `--scope user` for user context) with optional `--override $installOverride`.
-- **Exit code handling:** Uses a WinGet exit-code map (Success, RetryScope, RetryLater, Fail). References: [FileWave – Troubleshooting WinGet](https://kb.filewave.com/books/microsoft-windows-package-manager-winget/page/troubleshooting-errors-with-winget), [Microsoft – winget return codes](https://github.com/microsoft/winget-cli/blob/master/doc/windows/package-manager/winget/returnCodes.md).
-- **RetryScope:** If “no applicable installer for scope”, retries **without** `--scope` (some packages only support one scope).
-- **RetryLater:** Transient errors (app in use, disk full, reboot required, etc.) → script **exits 0** so Intune can retry later.
-- **Success:** Exit 0 on success or “already installed” / “higher version installed”.
+Every script runs `winget --version` before performing any operations. If the check fails (non-zero exit code or no output):
 
-**Example (success):**
+- The script logs a warning suggesting a restart or repair.
+- **Exits with code 0** so Intune does not mark the app as permanently failed.
+- Intune will retry the deployment after the device reboots or checks in again.
 
-```
-2025-05-31 11:10:12 [  Start   ] ======== Install Script Started ========
-2025-05-31 11:10:12 [  Info    ] ComputerName: WS-81F690CC7DE6 | User: WS-81F690CC7DE6$ | Application: 7-Zip
-2025-05-31 11:10:12 [  Info    ] Winget App ID: 7zip.7zip
-2025-05-31 11:10:12 [  Get     ] Resolved Winget path.
-2025-05-31 11:10:12 [  Info    ] Winget version: v1.10.390
-2025-05-31 11:10:12 [  Run     ] Installing with scope machine.
-2025-05-31 11:10:18 [  Info    ] Winget install exit code: 0 (Success); Category=Success
-2025-05-31 11:10:18 [  Success ] Installation completed successfully.
-2025-05-31 11:10:18 [  Info    ] Script execution time: 00:00:05.50
-2025-05-31 11:10:18 [  Info    ] Exit Code: 0
-2025-05-31 11:10:18 [  End     ] ======== Install Script Completed ========
-```
+This is a deliberate design choice: if WinGet is broken (e.g. after a Windows update that removes the App Installer), exiting 1 would cause Intune to mark the app as "failed" with no automatic retry. Exiting 0 lets Intune retry silently once WinGet is repaired.
+
+**To make WinGet work in SYSTEM context**, deploy this script via Intune as a Platform Script:
+
+[Winget-SystemContext](https://github.com/Barg0/Intune-Platform-Scripts/tree/main/Winget-SystemContext) -- Registers the required UWP dependency paths (`Microsoft.VCLibs`, `Microsoft.UI.Xaml`) so they are available to WinGet when running as SYSTEM.
 
 ---
 
-### 🗑️ `uninstall.ps1`
+## 🔬 Install Override Deep Dive
 
-- Resolves Winget path and checks Winget version (exits 0 if check fails).
-- **First attempt:** `winget uninstall -e --id $wingetAppId --silent --scope machine` (or `--scope user` for user context).
-- **Retry without scope:** If "no packages found" with scope, retries **without** `--scope` before treating as success. Matches install workaround: when install fell back to no-scope (e.g. Proton Authenticator), uninstall must try no-scope to find and remove the package.
-- **Success:** Exit 0 on success or “no packages found” (already uninstalled) after trying both scoped and unscoped.
+The `--override` flag tells WinGet to replace its default silent install arguments with the value you provide. This is necessary for apps that need custom installer flags (e.g. Citrix store configuration, MSI properties, custom install paths).
 
-**Example (success):**
+### How the script passes the override to WinGet
 
-```
-2025-05-31 11:12:10 [  Start   ] ======== Uninstall Script Started ========
-2025-05-31 11:12:10 [  Info    ] ComputerName: WS-81F690CC7DE6 | User: WS-81F690CC7DE6$ | Application: 7-Zip
-2025-05-31 11:12:10 [  Info    ] Winget App ID: 7zip.7zip
-2025-05-31 11:12:10 [  Get     ] Resolved Winget path.
-2025-05-31 11:12:10 [  Info    ] Winget version: v1.10.390
-2025-05-31 11:12:10 [  Run     ] Uninstalling with scope machine.
-2025-05-31 11:12:12 [  Info    ] Winget uninstall exit code: 0 (Success); Category=Success
-2025-05-31 11:12:12 [  Success ] Uninstallation completed successfully.
-2025-05-31 11:12:12 [  Info    ] Script execution time: 00:00:01.65
-2025-05-31 11:12:12 [  Info    ] Exit Code: 0
-2025-05-31 11:12:12 [  End     ] ======== Uninstall Script Completed ========
-```
+The override value from `$installOverride` must be passed as **a single argument** to `winget.exe`. If it gets split (e.g. at spaces), WinGet interprets the extra pieces as package search queries and fails with "An argument was provided that can only be used for single package."
 
----
+To avoid this, the install script uses `System.Diagnostics.ProcessStartInfo` instead of PowerShell's `& $exe @args` splatting:
 
-## 📄 Log Files & Diagnostics
+- **PowerShell 7 / .NET Core 5+:** Uses `ProcessStartInfo.ArgumentList`, which automatically handles escaping per Windows conventions.
+- **PowerShell 5.1 / .NET Framework:** Uses `ProcessStartInfo.Arguments` with manual escaping that follows the [`CommandLineToArgvW`](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-commandlinetoargvw) rules (the same algorithm as .NET's [`PasteArguments`](https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.CoreLib/src/System/PasteArguments.cs)).
 
-Logs are written to:
+### What is handled correctly
 
-```
-%ProgramData%\IntuneLogs\Applications\<applicationName>\
-├── detection.log
-├── install.log
-└── uninstall.log
-```
+| Content in override | Example | Status |
+|---------------------|---------|--------|
+| Spaces | `/silent /norestart` | Handled |
+| Double quotes | `STORE0="AppStore;..."` | Handled |
+| Backslashes in paths | `INSTALLDIR=C:\Program Files\App` | Handled |
+| Trailing backslash | `C:\Path\` | Handled |
+| Semicolons | `STORE0="App;https://...;on;Name"` | Handled |
+| URLs | `https://server.net/path` | Handled |
+| Empty value | *(leave blank)* | Handled (no `--override` passed) |
 
-To collect these via Intune **Collect diagnostics**, use a platform script that includes this path, for example:
+### Known WinGet / installer limitations
 
-🔗 [Diagnostics - Custom Log File Directory](https://github.com/Barg0/Intune-Platform-Scripts/tree/main/Diagnostics%20-%20Custom%20Log%20File%20Directory)
+These are issues in WinGet itself, not in this script. They cannot be fixed by the override escaping.
+
+| Scenario | Limitation | Workaround |
+|----------|------------|------------|
+| Environment variables with spaces in override | [winget-cli #2399](https://github.com/microsoft/winget-cli/issues/2399): WinGet's parser stops at the first space inside an expanded variable like `$Env:ProgramFiles` | Use paths without spaces (e.g. `C:\Progra~1\...`) or hardcode the full path |
+| Non-ASCII characters in paths | [winget-cli #4765](https://github.com/microsoft/winget-cli/issues/4765): characters like e, B are encoded incorrectly | Avoid accented characters in usernames or paths when possible |
+| PowerShell variables in override | The generated script uses single-quoted strings, so `$Env:TEMP` is a literal string, not expanded | Use concrete values in `apps.csv`, not PowerShell variables |
+
+### Override examples
+
+| Scenario | Value in apps.csv | What the installer receives |
+|----------|------------------|-----------------------------|
+| Default (none) | *(leave empty)* | WinGet uses its built-in silent flags |
+| Force silent | `/silent` | `/silent` |
+| MSI quiet (EXE-wrapped) | `/s /v "/qn"` | `/s /v "/qn"` |
+| Custom path (NSIS) | `/D=C:\Apps\MyApp` | `/D=C:\Apps\MyApp` |
+| Citrix store config | `/silent STORE0="AppStore;https://server/Store/discovery;on;My Store"` | `/silent STORE0="AppStore;https://server/Store/discovery;on;My Store"` |
+
+For more details on WinGet override handling, see:
+- [winget-cli #1317](https://github.com/microsoft/winget-cli/issues/1317) -- Override with spaces in paths
+- [winget-cli #5240](https://github.com/microsoft/winget-cli/issues/5240) -- Override with double quotes
 
 ---
 
 ## 🐛 Troubleshooting
 
-| What to do | How |
-|------------|-----|
-| **Verbose logging** | Set `$logDebug = $true` at the top of the script. Debug lines (path resolution, full commands, exit code details) will appear in the log. |
-| **Winget not working** | Run a separate Winget repair script (e.g. [Winget - System Context](https://github.com/Barg0/Intune-Platform-Scripts/blob/main/Winget%20-%20System%20Context.ps1)) and/or restart the device. These templates exit 0 on Winget version failure so Intune can retry. |
-| **Install override with spaces/semicolons** | Use a **single-quoted** PowerShell string for `$installOverride` so the whole value is one argument (e.g. `'/silent STORE0=''...'''`). |
+These are issues that occur **on the device** when the scripts run. For issues with `package.ps1` or `deploy.ps1`, see the [main README](../README.md#troubleshooting).
+
+| Issue | Solution |
+|-------|----------|
+| WinGet not working as SYSTEM | Deploy [Winget-SystemContext](https://github.com/Barg0/Intune-Platform-Scripts/tree/main/Winget-SystemContext) via Intune, then restart devices. |
+| App installs but detection fails | Check `%ProgramData%\IntuneLogs\Applications\<App>\detection.log`. Verify the WinGet App ID matches what `winget list` shows in the same context (SYSTEM vs user). |
+| Uninstall says "no packages found" | Expected when install used scope fallback. The uninstall script retries without `--scope` automatically. Check the log to confirm. |
+| Install exits 0 but app not installed | A transient error occurred (RetryLater category). Intune will retry. Check `install.log` for the specific WinGet exit code. |
+| Install fails with "single package" error | Override with spaces/quotes was being split into multiple arguments. This was fixed by using `ProcessStartInfo.ArgumentList`. Make sure you are using the latest template. Re-package and redeploy. |
+| WinGet version check fails | The script exits 0 so Intune can retry after reboot. Deploy Winget-SystemContext to make UWP dependencies available. |
+| Override not applied correctly | Enable `$logDebug = $true` in the script, re-package, redeploy, and check the `[Debug]` log lines for the exact command being invoked. |
+| Non-English Windows causes issues | `package.ps1` normalizes `winget show` output via `jsons/language.json`. If your locale is missing, add it following the existing pattern. This only affects packaging, not on-device scripts. |
 
 ---
 
-*Happy deploying! 🎉*
+## 📚 References
+
+- [WinGet return codes](https://github.com/microsoft/winget-cli/blob/master/doc/windows/package-manager/winget/returnCodes.md) -- Exit code reference
+- [WinGet install --override](https://learn.microsoft.com/en-us/windows/package-manager/winget/install) -- Override documentation
+- [winget-cli #1317](https://github.com/microsoft/winget-cli/issues/1317) -- Override with spaces in paths (PowerShell escaping)
+- [winget-cli #5240](https://github.com/microsoft/winget-cli/issues/5240) -- Override with double quotes
+- [winget-cli #2399](https://github.com/microsoft/winget-cli/issues/2399) -- Environment variables with spaces in override
+- [CommandLineToArgvW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-commandlinetoargvw) -- Windows argument parsing rules
+- [.NET PasteArguments source](https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.CoreLib/src/System/PasteArguments.cs) -- The escaping algorithm used in the fallback
+- [Everyone quotes command line arguments the wrong way](https://learn.microsoft.com/en-us/archive/blogs/twistylittlepassagesallalike/everyone-quotes-command-line-arguments-the-wrong-way) -- Microsoft blog explaining the quoting problem
+- [FileWave -- WinGet troubleshooting](https://kb.filewave.com/books/microsoft-windows-package-manager-winget/page/troubleshooting-errors-with-winget) -- Common error codes
+- [Winget-SystemContext](https://github.com/Barg0/Intune-Platform-Scripts/tree/main/Winget-SystemContext) -- Make WinGet work in SYSTEM context
+- [PsExec](https://learn.microsoft.com/en-us/sysinternals/downloads/psexec) -- Sysinternals tool for testing as SYSTEM
+- [Prepare Win32 app content](https://learn.microsoft.com/en-us/mem/intune/apps/apps-win32-prepare) -- Intune documentation for manual packaging
+- [Diagnostics - Custom Log File Directory](https://github.com/Barg0/Intune-Platform-Scripts/tree/main/Diagnostics%20-%20Custom%20Log%20File%20Directory) -- Collect device logs remotely via Intune

@@ -68,3 +68,5 @@ Greenshot,Greenshot.Greenshot,system,
 Microsoft Azure Storage Explorer,Microsoft.Azure.StorageExplorer,system,
 Remote Desktop,Microsoft.RemoteDesktopClient,system,
 Sublime Text 4,SublimeHQ.SublimeText.4,system,
+Proton Authenticator,Proton.ProtonAuthenticator,user,
+Citrix Workspace,Citrix.Workspace.LTSR,system,/silent STORE0="AppStore;https://testserver.net/Citrix/MyStore/discovery;on;HR App Store"

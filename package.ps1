@@ -154,17 +154,20 @@ function Set-Placeholders {
     if ($contextNormalized -notmatch '^(system|user)$') { $contextNormalized = 'system' }
     $content = $content.Replace('__INSTALL_CONTEXT__', $contextNormalized)
 
+    # Escape single quotes for PowerShell single-quoted strings: ' → ''
+    $sq = @{ name = $applicationName.Replace("'", "''"); id = $wingetAppId.Replace("'", "''"); ctx = $contextNormalized.Replace("'", "''") }
+
     if (-not [string]::IsNullOrWhiteSpace($installOverride)) {
-        $overrideEscaped = $installOverride.Trim().Replace('"', '`"').Replace("`r", '').Replace("`n", ' ')
+        $overrideEscaped = $installOverride.Trim().Replace("'", "''").Replace("`r", '').Replace("`n", ' ')
         $content = $content.Replace('__INSTALL_OVERRIDE__', $overrideEscaped)
-        $content = $content -replace '(?m)^\s*\$installOverride\s*=\s*.*$', "`$installOverride = `"$overrideEscaped`""
+        $content = $content -replace '(?m)^\s*\$installOverride\s*=\s*.*$', "`$installOverride = '$overrideEscaped'"
     } else {
         $content = $content.Replace('__INSTALL_OVERRIDE__', '')
     }
 
-    $content = $content -replace '(?m)^\s*\$applicationName\s*=\s*.*$', "`$applicationName = `"$applicationName`""
-    $content = $content -replace '(?m)^\s*\$wingetAppId\s*=\s*.*$', "`$wingetAppId = `"$wingetAppId`""
-    $content = $content -replace '(?m)^\s*\$installContext\s*=\s*.*$', "`$installContext = `"$contextNormalized`""
+    $content = $content -replace '(?m)^\s*\$applicationName\s*=\s*.*$', "`$applicationName = '$($sq.name)'"
+    $content = $content -replace '(?m)^\s*\$wingetAppId\s*=\s*.*$', "`$wingetAppId = '$($sq.id)'"
+    $content = $content -replace '(?m)^\s*\$installContext\s*=\s*.*$', "`$installContext = '$($sq.ctx)'"
 
     Set-Content -LiteralPath $outputPath -Value $content -Encoding UTF8
     Write-Log "Set-Placeholders: wrote output file '$outputPath'" -Tag "Debug"

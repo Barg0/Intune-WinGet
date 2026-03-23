@@ -2,9 +2,9 @@
 $scriptStartTime = Get-Date
 
 # ---------------------------[ Configuration ]---------------------------
-$applicationName  = "__APPLICATION_NAME__"
-$wingetAppId      = "__WINGET_APP_ID__"
-$installContext   = "__INSTALL_CONTEXT__"
+$applicationName  = '__APPLICATION_NAME__'
+$wingetAppId      = '__WINGET_APP_ID__'
+$installContext   = '__INSTALL_CONTEXT__'
 
 $logFileName      = "uninstall.log"
 

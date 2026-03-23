@@ -2,14 +2,14 @@
 $scriptStartTime = Get-Date
 
 # ---------------------------[ Configuration ]---------------------------
-$applicationName  = "__APPLICATION_NAME__"
-$wingetAppId      = "__WINGET_APP_ID__"
-$installContext   = "__INSTALL_CONTEXT__"
+$applicationName  = '__APPLICATION_NAME__'
+$wingetAppId      = '__WINGET_APP_ID__'
+$installContext   = '__INSTALL_CONTEXT__'
 
 # Optional: pass a string directly to the installer (e.g. "/silent /configID=XXXXX"). Leave empty for none.
 # See: https://learn.microsoft.com/en-us/windows/package-manager/winget/install (--override)
 # Set from apps.csv InstallOverride column when non-empty.
-$installOverride  = "__INSTALL_OVERRIDE__"
+$installOverride  = '__INSTALL_OVERRIDE__'
 
 $logFileName      = "install.log"
 
@@ -83,6 +83,52 @@ function Write-Log {
     Write-Host "$Message"
 }
 
+# ---------------------------[ Argument Escaping for Winget Override ]---------------------------
+# Winget requires --override as a single argument; spaces, quotes, backslashes must be preserved.
+# .NET Core/5+ ProcessStartInfo.ArgumentList handles this; .NET Framework needs manual escaping.
+# Uses CommandLineToArgvW rules: \" for literal ", backslashes before " or at end doubled.
+# Ref: https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.CoreLib/src/System/PasteArguments.cs
+function Join-ArgumentsForProcess {
+    param([string[]]$ArgumentList)
+    $escaped = foreach ($arg in $ArgumentList) {
+        $needsQuoting = $arg.Length -eq 0 -or $arg -match '[\s"]'
+        if (-not $needsQuoting) {
+            $arg
+        } else {
+            $sb = [System.Text.StringBuilder]::new()
+            [void]$sb.Append('"')
+            $i = 0
+            while ($i -lt $arg.Length) {
+                $c = $arg[$i]
+                $i++
+                if ($c -eq [char]0x5C) {
+                    $n = 1
+                    while ($i -lt $arg.Length -and $arg[$i] -eq [char]0x5C) { $i++; $n++ }
+                    if ($i -eq $arg.Length) {
+                        [void]$sb.Append([char]0x5C, $n * 2)
+                    } elseif ($arg[$i] -eq '"') {
+                        [void]$sb.Append([char]0x5C, $n * 2 + 1)
+                        [void]$sb.Append('"')
+                        $i++
+                    } else {
+                        [void]$sb.Append([char]0x5C, $n)
+                    }
+                    continue
+                }
+                if ($c -eq '"') {
+                    [void]$sb.Append([char]0x5C)
+                    [void]$sb.Append('"')
+                } else {
+                    [void]$sb.Append($c)
+                }
+            }
+            [void]$sb.Append('"')
+            $sb.ToString()
+        }
+    }
+    $escaped -join ' '
+}
+
 # ---------------------------[ Exit Function ]---------------------------
 function Complete-Script {
     param([int]$ExitCode)
@@ -145,8 +191,10 @@ function Get-WingetExitCodeInfo {
         -1978334959    = @{ Category = "RetryLater"; Description = "Package in use by another application" } # INSTALL_PACKAGE_IN_USE_BY_APPLICATION
         -1978335125    = @{ Category = "RetryLater"; Description = "Service busy or unavailable" }            # SERVICE_UNAVAILABLE (general)
 
+        # --- RetryScope: some packages are not found when --scope is specified ---
+        -1978335212    = @{ Category = "RetryScope"; Description = "No packages found" }                         # NO_APPLICATIONS_FOUND
+
         # --- Fail: unrecoverable without admin or script change ---
-        -1978335212    = @{ Category = "Fail"; Description = "No packages found" }                             # NO_APPLICATIONS_FOUND
         -1978335217    = @{ Category = "Fail"; Description = "No applicable installer" }                     # NO_APPLICABLE_INSTALLER (general)
         -1978334972    = @{ Category = "Fail"; Description = "Missing dependency" }                          # INSTALL_MISSING_DEPENDENCY
         -1978334968    = @{ Category = "Fail"; Description = "Installation error; contact support" }         # INSTALL_CONTACT_SUPPORT
@@ -285,8 +333,22 @@ try {
             Write-Log "$runLabel." -Tag "Run"
             Write-Log "Invoking: winget $($currentArgs -join ' ')" -Tag "Debug"
 
-            & $wingetExe @currentArgs
-            $exitCode = $LASTEXITCODE
+            # Use ProcessStartInfo so --override is passed as exactly one argument.
+            # PowerShell's & splatting can split args with spaces; winget fails with
+            # "An argument was provided that can only be used for single package".
+            # Ref: https://github.com/microsoft/winget-cli/issues/1317, https://github.com/microsoft/winget-cli/issues/5240
+            $psi = [System.Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName = $wingetExe
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            if ($psi.PSObject.Properties['ArgumentList']) {
+                foreach ($arg in $currentArgs) { [void]$psi.ArgumentList.Add($arg) }
+            } else {
+                $psi.Arguments = Join-ArgumentsForProcess -ArgumentList $currentArgs
+            }
+            $p = [System.Diagnostics.Process]::Start($psi)
+            $p.WaitForExit()
+            $exitCode = $p.ExitCode
             $exitInfo = Get-WingetExitCodeInfo -exitCode $exitCode
             Write-Log "Winget exit code: $exitCode ($($exitInfo.Description)); Category=$($exitInfo.Category)" -Tag "Info"
 
@@ -348,4 +410,3 @@ catch {
     Write-Log "Exception details: $($_.ScriptStackTrace)" -Tag "Debug"
     Complete-Script -ExitCode 1
 }
-
