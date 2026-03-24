@@ -230,9 +230,11 @@ When uploading a `.intunewin` package manually in [Intune Admin Center](https://
 
 | Setting | Value |
 |---------|-------|
-| Install command | `powershell.exe -ExecutionPolicy Bypass .\install.ps1` |
-| Uninstall command | `powershell.exe -ExecutionPolicy Bypass .\uninstall.ps1` |
+| Install command | `powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden .\install.ps1` |
+| Uninstall command | `powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden .\uninstall.ps1` |
 | Install behavior | User |
+
+*User context uses `-NoProfile -NonInteractive -WindowStyle Hidden` to reduce visible console window.*
 
 **Shared settings:**
 
