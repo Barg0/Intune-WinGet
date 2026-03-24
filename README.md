@@ -109,8 +109,6 @@ When Intune runs Win32 apps as SYSTEM, WinGet can fail because the required UWP 
 
 ## 🚀 Quick Start
 
-For experienced admins who want to get going fast. Detailed explanations follow in the sections below.
-
 ```powershell
 # 1️⃣ Place IntuneWinAppUtil.exe in the project root (download link above)
 
