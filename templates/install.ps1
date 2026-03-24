@@ -20,7 +20,11 @@ $logGet        = $true
 $logRun        = $true
 $enableLogFile = $true
 
-$logFileDirectory = "$env:ProgramData\IntuneLogs\Applications\$applicationName"
+if ($installContext -eq 'user') {
+    $logFileDirectory = "$env:ProgramData\IntuneLogs\Applications\$($env:USERNAME)\$applicationName"
+} else {
+    $logFileDirectory = "$env:ProgramData\IntuneLogs\Applications\$applicationName"
+}
 $logFile          = "$logFileDirectory\$logFileName"
 
 if ($enableLogFile -and -not (Test-Path -Path $logFileDirectory)) {
