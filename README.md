@@ -77,7 +77,6 @@ To deploy an app to devices, add users or devices to the Required group. To make
 | Requirement | Why | How to get it |
 |-------------|-----|---------------|
 | **Windows 10 or 11** | WinGet and IntuneWinAppUtil.exe only run on Windows | -- |
-| **PowerShell 5.1+** | Pre-installed on Windows 10/11 | Check: `$PSVersionTable.PSVersion` |
 | **WinGet** (Windows Package Manager) | Used to fetch metadata and install apps on devices | Pre-installed on Win 11. Win 10: [Install App Installer](https://aka.ms/getwinget) |
 | **IntuneWinAppUtil.exe** | Microsoft's Win32 Content Prep Tool -- packages scripts into `.intunewin` | [Download from GitHub](https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool/releases) -- extract the ZIP and place `IntuneWinAppUtil.exe` in the project root folder |
 | **Microsoft Graph PowerShell modules** | Used by `deploy.ps1` to talk to the Intune API | One-time install (see below) |
