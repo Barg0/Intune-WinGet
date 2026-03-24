@@ -506,9 +506,9 @@ These are the settings configured for each Win32 app in Intune:
 |---------|-------|
 | Display version | `WinGet` |
 | Install command (system) | `%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\install.ps1` |
-| Install command (user) | `powershell.exe -ExecutionPolicy Bypass .\install.ps1` |
+| Install command (user) | `powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden .\install.ps1` |
 | Uninstall command (system) | `%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\uninstall.ps1` |
-| Uninstall command (user) | `powershell.exe -ExecutionPolicy Bypass .\uninstall.ps1` |
+| Uninstall command (user) | `powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden .\uninstall.ps1` |
 | Install behavior | System or User (matches `InstallContext` from CSV) |
 | Restart behavior | Based on return codes |
 | Return codes | `0` = Success, `1` = Failed |
@@ -517,6 +517,8 @@ These are the settings configured for each Win32 app in Intune:
 | Allow available uninstall | Yes |
 | Required assignment notifications | Hidden (silent install) |
 | Detection | Custom PowerShell script (`detection.ps1`) |
+
+> **User context:** Uses `-NoProfile -NonInteractive -WindowStyle Hidden` to reduce visible console window.
 
 ---
 

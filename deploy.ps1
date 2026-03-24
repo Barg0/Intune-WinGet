@@ -26,8 +26,9 @@ $graphScopes           = @('DeviceManagementApps.ReadWrite.All', 'Group.ReadWrit
 $minWindowsRelease     = "21H1"
 $installCommandLineSystem   = "%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\install.ps1"
 $uninstallCommandLineSystem = "%WINDIR%\sysnative\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass .\uninstall.ps1"
-$installCommandLineUser     = "powershell.exe -ExecutionPolicy Bypass .\install.ps1"
-$uninstallCommandLineUser   = "powershell.exe -ExecutionPolicy Bypass .\uninstall.ps1"
+# User context: -NoProfile -NonInteractive for silent run; -WindowStyle Hidden to reduce visible window
+$installCommandLineUser     = "powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden .\install.ps1"
+$uninstallCommandLineUser   = "powershell.exe -ExecutionPolicy Bypass -NoProfile -NonInteractive -WindowStyle Hidden .\uninstall.ps1"
 $chunkSizeBytes        = 1024l * 1024l * 6l
 $sasRenewAfterMs       = 420000
 $sleepAfterCommitSec   = 30
