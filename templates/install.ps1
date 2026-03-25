@@ -197,9 +197,9 @@ function Get-WingetExitCodeInfo {
 
         # --- RetryScope: some packages are not found when --scope is specified ---
         -1978335212    = @{ Category = "RetryScope"; Description = "No packages found" }                         # NO_APPLICATIONS_FOUND
-
+        -1978335217    = @{ Category = "RetryScope"; Description = "No applicable installer" }                     # NO_APPLICABLE_INSTALLER (general)
+        
         # --- Fail: unrecoverable without admin or script change ---
-        -1978335217    = @{ Category = "Fail"; Description = "No applicable installer" }                     # NO_APPLICABLE_INSTALLER (general)
         -1978334972    = @{ Category = "Fail"; Description = "Missing dependency" }                          # INSTALL_MISSING_DEPENDENCY
         -1978334968    = @{ Category = "Fail"; Description = "Installation error; contact support" }         # INSTALL_CONTACT_SUPPORT
         -1978334964    = @{ Category = "Fail"; Description = "Installation cancelled by user" }            # INSTALL_CANCELLED_BY_USER
