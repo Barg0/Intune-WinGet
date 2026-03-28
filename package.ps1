@@ -508,10 +508,15 @@ Write-Log "Processing $($rows.Count) app(s) from CSV" -Tag "Info"
 $rowIndex = 0
 foreach ($row in $rows) {
     $rowIndex++
-    $appName   = ($row.ApplicationName).ToString().Trim()
-    $wingetId  = ($row.WingetAppId).ToString().Trim()
-    $installContext = if ($row.PSObject.Properties['InstallContext']) { ($row.InstallContext).ToString().Trim() } else { 'system' }
-    $installOverride = if ($row.PSObject.Properties['InstallOverride']) { ($row.InstallOverride).ToString().Trim() } else { '' }
+    $appName   = ([string]$row.ApplicationName).Trim()
+    $wingetId  = ([string]$row.WingetAppId).Trim()
+    $installContext = if ($row.PSObject.Properties['InstallContext']) {
+        $ctx = ([string]$row.InstallContext).Trim()
+        if ([string]::IsNullOrWhiteSpace($ctx)) { 'system' } else { $ctx }
+    } else { 'system' }
+    $installOverride = if ($row.PSObject.Properties['InstallOverride']) {
+        ([string]$row.InstallOverride).Trim()
+    } else { '' }
     if ($installContext -notmatch '^(system|user)$') { $installContext = 'system' }
 
     Write-Log "Row $rowIndex : appName='$appName' | wingetId='$wingetId' | installContext='$installContext'" -Tag "Debug"
