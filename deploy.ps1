@@ -267,23 +267,62 @@ function Get-DetectionRuleFromScript {
     }
 }
 
+# ---------------------------[ Safe folder / file names ]---------------------------
+function Get-SafeName {
+    param([string]$name)
+    $invalid = [System.IO.Path]::GetInvalidFileNameChars() -join ''
+    $regex = "[" + [Regex]::Escape($invalid) + "]"
+    return ($name -replace $regex, '_').Trim()
+}
+
 # ---------------------------[ Icon base64 ]---------------------------
-# Resolves icon by: 1) exact match (AppName.png), 2) prefix match (app starts with icon base name, longest wins)
+# Tries each candidate in order: exact match (Name.png), then prefix match (longest base name wins).
+# Candidates should include CSV ApplicationName, WinGet catalog name (displayName), and package folder safe name — they often differ.
 function Get-IconBase64 {
-    param([string]$appName, [string]$iconsFolder)
+    param(
+        [Parameter(Mandatory)][string[]]$CandidateAppNames,
+        [Parameter(Mandatory)][string]$iconsFolder
+    )
     if (-not (Test-Path -LiteralPath $iconsFolder)) { return $null }
     $allIcons = Get-ChildItem -LiteralPath $iconsFolder -Filter '*.png' -File -ErrorAction SilentlyContinue
     if (-not $allIcons) { return $null }
-    $exactMatch = $allIcons | Where-Object { $_.BaseName -eq $appName } | Select-Object -First 1
-    if ($exactMatch) {
-        Write-Log "Icon: $($exactMatch.Name)" -Tag "Get"
-        return [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($exactMatch.FullName))
+
+    $orderedUnique = [System.Collections.Generic.List[string]]::new()
+    $seen = @{}
+    foreach ($raw in $CandidateAppNames) {
+        if ([string]::IsNullOrWhiteSpace($raw)) { continue }
+        $t = $raw.Trim()
+        $key = $t.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        [void]$orderedUnique.Add($t)
     }
-    $prefixMatches = $allIcons | Where-Object { $appName.StartsWith($_.BaseName, [StringComparison]::OrdinalIgnoreCase) }
-    if (-not $prefixMatches) { return $null }
-    $iconFile = $prefixMatches | Sort-Object { $_.BaseName.Length } -Descending | Select-Object -First 1
-    Write-Log "Icon: $($iconFile.Name)" -Tag "Get"
-    return [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($iconFile.FullName))
+
+    foreach ($appName in $orderedUnique) {
+        $exactMatch = $allIcons | Where-Object { $_.BaseName -eq $appName } | Select-Object -First 1
+        if ($exactMatch) {
+            Write-Log "Icon: $($exactMatch.Name) (exact match for '$appName')" -Tag "Get"
+            return [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($exactMatch.FullName))
+        }
+    }
+    foreach ($appName in $orderedUnique) {
+        $prefixMatches = $allIcons | Where-Object { $appName.StartsWith($_.BaseName, [StringComparison]::OrdinalIgnoreCase) }
+        if (-not $prefixMatches) { continue }
+        $iconFile = $prefixMatches | Sort-Object { $_.BaseName.Length } -Descending | Select-Object -First 1
+        Write-Log "Icon: $($iconFile.Name) (prefix match for '$appName')" -Tag "Get"
+        return [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($iconFile.FullName))
+    }
+    return $null
+}
+
+# mimeContent shape required by Graph for mobileApp.largeIcon (see win32LobApp update docs).
+function New-LargeIconMimeObject {
+    param([Parameter(Mandatory)][string]$IconBase64)
+    return @{
+        '@odata.type' = 'microsoft.graph.mimeContent'
+        type          = 'image/png'
+        value         = $IconBase64
+    }
 }
 
 # ---------------------------[ Map Architectures from info.json ]---------------------------
@@ -352,7 +391,7 @@ function New-Win32LobAppBody {
         runAs32Bit                     = $false
     }
     if (-not [string]::IsNullOrWhiteSpace($iconBase64)) {
-        $body.largeIcon = @{ type = 'image/png'; value = $iconBase64 }
+        $body.largeIcon = New-LargeIconMimeObject -IconBase64 $iconBase64
     }
     return $body
 }
@@ -461,13 +500,6 @@ function Get-ExistingAppId {
     return $null
 }
 
-function Get-SafeName {
-    param([string]$name)
-    $invalid = [System.IO.Path]::GetInvalidFileNameChars() -join ''
-    $regex = "[" + [Regex]::Escape($invalid) + "]"
-    return ($name -replace $regex, '_').Trim()
-}
-
 # ---------------------------[ Chunked Azure upload ]---------------------------
 function Send-ChunkedUpload {
     param([string]$sasUri, [string]$filePath, [string]$fileUri = $null)
@@ -507,7 +539,11 @@ function Send-ChunkedUpload {
 
 # ---------------------------[ Main deploy ]---------------------------
 function Invoke-Win32AppDeployment {
-    param([string]$appFolderPath, [string]$appName)
+    param(
+        [string]$appFolderPath,
+        [string]$appName,
+        [string]$csvApplicationName
+    )
     $infoPath = Join-Path $appFolderPath 'info.json'
     if (-not (Test-Path -LiteralPath $infoPath)) {
         Write-Log "info.json missing: $appFolderPath" -Tag "Error"
@@ -548,9 +584,22 @@ function Invoke-Win32AppDeployment {
     }
 
     Write-Log "Processing: $displayName (runAsAccount=$runAsAccount)" -Tag "Info"
-    $iconBase64 = Get-IconBase64 -appName $appName -iconsFolder $iconsRoot
+    $iconCandidates = @(
+        $csvApplicationName
+        (Get-SafeName -name $csvApplicationName)
+        $displayName
+        (Get-SafeName -name $displayName)
+        $appName
+    )
+    $wingetIdForIcon = if ($null -ne $appInfo.Id) { [string]$appInfo.Id } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($wingetIdForIcon)) {
+        $wingetIdForIcon = $wingetIdForIcon.Trim()
+        $iconCandidates += @($wingetIdForIcon, (Get-SafeName -name $wingetIdForIcon))
+    }
+    $iconBase64 = Get-IconBase64 -iconsFolder $iconsRoot -CandidateAppNames $iconCandidates
     if (-not $iconBase64) {
-        Write-Log "No icon file retrieved for: $displayName" -Tag "Info"
+        $tried = $iconCandidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Sort-Object -Unique
+        Write-Log "No icon file in icons/ matched any of: $($tried -join ', ')" -Tag "Info"
     }
     $detectionRule = Get-DetectionRuleFromScript -scriptPath $detectionPath
     $winMetadata = Get-IntuneWinMetadata -intuneWinPath $intunewinPath
@@ -585,7 +634,21 @@ function Invoke-Win32AppDeployment {
                 -installCommandLine $installCmd -uninstallCommandLine $uninstallCmd
             if ([string]::IsNullOrWhiteSpace($iconBase64)) {
                 $null = $fullBody.Remove('largeIcon')
-                Write-Log "No local icon; preserving existing Intune icon" -Tag "Debug"
+                try {
+                    $existingApp = Invoke-GraphApi -method Get -resource "/deviceAppManagement/mobileApps/$($appId)?`$select=id,largeIcon"
+                    if ($existingApp.largeIcon -and $existingApp.largeIcon.value) {
+                        $fullBody.largeIcon = @{
+                            '@odata.type' = 'microsoft.graph.mimeContent'
+                            type          = if ($existingApp.largeIcon.type) { $existingApp.largeIcon.type } else { 'image/png' }
+                            value         = $existingApp.largeIcon.value
+                        }
+                        Write-Log "No new local icon; re-including existing Intune largeIcon in PATCH (omit would clear it)" -Tag "Debug"
+                    } else {
+                        Write-Log "No local icon and app has no largeIcon in Intune to reuse" -Tag "Debug"
+                    }
+                } catch {
+                    Write-Log "Could not read existing largeIcon for preserve: $_" -Tag "Debug"
+                }
             }
             Invoke-GraphApi -method Patch -resource "/deviceAppManagement/mobileApps/$appId" -body $fullBody
             Write-Log "Updated all app metadata (display, description, icon, install, detection)" -Tag "Debug"
@@ -658,6 +721,20 @@ function Invoke-Win32AppDeployment {
         Invoke-GraphApi -method Patch -resource "/deviceAppManagement/mobileApps/$appId" -body $patchBody
         Start-Sleep -Seconds $sleepAfterCommitSec
 
+        # Intune often clears largeIcon after the Win32 upload/commit pipeline; re-apply when we have a local PNG.
+        if (-not [string]::IsNullOrWhiteSpace($iconBase64)) {
+            $iconReapply = @{
+                '@odata.type' = '#microsoft.graph.win32LobApp'
+                largeIcon     = (New-LargeIconMimeObject -IconBase64 $iconBase64)
+            }
+            try {
+                Invoke-GraphApi -method Patch -resource "/deviceAppManagement/mobileApps/$appId" -body $iconReapply
+                Write-Log "largeIcon applied again after content commit (upload pipeline)" -Tag "Get"
+            } catch {
+                Write-Log "Post-commit largeIcon PATCH failed: $_" -Tag "Error"
+            }
+        }
+
         # 8. Set architectures via enableApplicableArchitectures (Requirements tab)
         $enableArchBody = @{ applicableArchitectures = $applicableArchitectures }
         try {
@@ -724,7 +801,7 @@ $skippedCount  = 0
 $notPackagedCount = 0
 
 foreach ($row in $rows) {
-    $appName = ($row.ApplicationName).ToString().Trim()
+    $appName = ([string]$row.ApplicationName).Trim()
     if ([string]::IsNullOrWhiteSpace($appName)) { continue }
 
     $safeName = Get-SafeName -name $appName
@@ -735,7 +812,7 @@ foreach ($row in $rows) {
         continue
     }
 
-    $result = Invoke-Win32AppDeployment -appFolderPath $appFolderPath -appName $safeName
+    $result = Invoke-Win32AppDeployment -appFolderPath $appFolderPath -appName $safeName -csvApplicationName $appName
     if ($result -eq $true)        { $deployedCount++ }
     elseif ($result -eq 'Skipped') { $skippedCount++ }
     else                          { $failedCount++ }
