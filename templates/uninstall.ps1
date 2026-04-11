@@ -218,7 +218,7 @@ try {
 
         if ($exitCode -eq 0) {
             if ($triedNoScope) {
-                Write-Log "Uninstall OK (no scope retry)" -Tag "Success"
+                Write-Log "Uninstall OK (no scope)" -Tag "Success"
             }
             else {
                 Write-Log "Uninstall OK" -Tag "Success"
@@ -229,19 +229,19 @@ try {
         # -1978335212 = NO_APPLICATIONS_FOUND. If we tried with scope first, the app may have been
         # installed without scope (install workaround). Retry without scope before treating as success.
         if ($exitCode -eq -1978335212 -and -not $triedNoScope) {
-            Write-Log "Retry: no --scope (5212)" -Tag "Info"
+            Write-Log "Retry: no --scope (not found for scope)" -Tag "Info"
             $triedNoScope = $true
             continue
         }
 
         if ($exitCode -eq -1978335212) {
-            Write-Log "Uninstall OK (already gone)" -Tag "Success"
+            Write-Log "Uninstall OK (nothing to remove)" -Tag "Success"
             Complete-Script -ExitCode 0
         }
 
-        # Other failure; retry without scope once (same as install fallback)
+        # Other failure - retry without scope once (same as install fallback)
         if (-not $triedNoScope) {
-            Write-Log "Retry: no --scope" -Tag "Info"
+            Write-Log "Retry: no --scope (fail for scope)" -Tag "Info"
             $triedNoScope = $true
             continue
         }
