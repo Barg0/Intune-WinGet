@@ -28,10 +28,15 @@ if ($installContext -eq 'user') {
 $logFile          = "$logFileDirectory\$logFileName"
 
 if ($enableLogFile -and -not (Test-Path -Path $logFileDirectory)) {
-    New-Item -ItemType Directory -Path $logFileDirectory -Force | Out-Null
+    try {
+        $null = New-Item -ItemType Directory -Path $logFileDirectory -Force -ErrorAction Stop
+    }
+    catch {
+        Write-Warning "Failed to create log directory '$logFileDirectory': $($_.Exception.Message)"
+    }
 }
 
-# ---------------------------[ Logging Function ]---------------------------
+# Logging aligned with https://github.com/Barg0/Intune-WinGet-Update (compact line, I/O warnings).
 function Write-Log {
     [CmdletBinding()]
     param (
@@ -41,7 +46,6 @@ function Write-Log {
 
     if (-not $log) { return }
 
-    # Per-tag switches
     if (($Tag -eq "Debug") -and (-not $logDebug)) { return }
     if (($Tag -eq "Get")   -and (-not $logGet))   { return }
     if (($Tag -eq "Run")   -and (-not $logRun))   { return }
@@ -54,7 +58,7 @@ function Write-Log {
         $rawTag = $rawTag.PadRight(7)
     }
     else {
-        $rawTag = "Error  "
+        $rawTag = "Error "
     }
 
     $color = switch ($rawTag.Trim()) {
@@ -69,19 +73,19 @@ function Write-Log {
         default   { "White" }
     }
 
-    $logMessage = "$timestamp [  $rawTag ] $Message"
+    $logMessage = "$timestamp [ $rawTag ] $Message"
 
     if ($enableLogFile) {
         try {
-            Add-Content -Path $logFile -Value $logMessage -Encoding UTF8
+            Add-Content -Path $logFile -Value $logMessage -Encoding UTF8 -ErrorAction Stop
         }
         catch {
-            # Logging must never block script execution
+            Write-Warning "Failed to write to log file: $($_.Exception.Message)"
         }
     }
 
     Write-Host "$timestamp " -NoNewline
-    Write-Host "[  " -NoNewline -ForegroundColor White
+    Write-Host "[ " -NoNewline -ForegroundColor White
     Write-Host "$rawTag" -NoNewline -ForegroundColor $color
     Write-Host " ] " -NoNewline -ForegroundColor White
     Write-Host "$Message"
@@ -140,9 +144,9 @@ function Complete-Script {
     $scriptEndTime = Get-Date
     $duration      = $scriptEndTime - $scriptStartTime
 
-    Write-Log "Script execution time: $($duration.ToString('hh\:mm\:ss\.ff'))" -Tag "Info"
-    Write-Log "Exit Code: $ExitCode" -Tag "Info"
-    Write-Log "======== Install Script Completed ========" -Tag "End"
+    Write-Log "Runtime $($duration.ToString('hh\:mm\:ss\.ff'))" -Tag "Info"
+    Write-Log "Exit $ExitCode" -Tag "Info"
+    Write-Log "==================== End ====================" -Tag "End"
 
     exit $ExitCode
 }
@@ -159,11 +163,11 @@ function Complete-Script {
 #   Unknown   - Unmapped code; log and treat as Fail.
 #
 # Retry engine: A loop applies workarounds based on category. Each workaround (RetryScope,
-# RetrySource) is tried at most once. Workarounds chain automatically – e.g. RetrySource ->
+# RetrySource) is tried at most once. Workarounds chain automatically - e.g. RetrySource ->
 # RetryScope produces a final attempt with --source winget and no --scope. Every winget call
 # is also wrapped in an in-progress wait loop (RetryLater for -1978334974).
 #
-# Install-specific errors (0x8A150101–0x8A150114) and general errors are included so logs are clear
+# Install-specific errors (0x8A150101-0x8A150114) and general errors are included so logs are clear
 # and behaviour is consistent. Some codes are unlikely in silent/automated runs but are still mapped.
 function Get-WingetExitCodeInfo {
     [CmdletBinding()]
@@ -198,7 +202,7 @@ function Get-WingetExitCodeInfo {
         # --- RetryScope: some packages are not found when --scope is specified ---
         -1978335212    = @{ Category = "RetryScope"; Description = "No packages found" }                         # NO_APPLICATIONS_FOUND
         -1978335217    = @{ Category = "RetryScope"; Description = "No applicable installer" }                     # NO_APPLICABLE_INSTALLER (general)
-        
+
         # --- Fail: unrecoverable without admin or script change ---
         -1978334972    = @{ Category = "Fail"; Description = "Missing dependency" }                          # INSTALL_MISSING_DEPENDENCY
         -1978334968    = @{ Category = "Fail"; Description = "Installation error; contact support" }         # INSTALL_CONTACT_SUPPORT
@@ -219,39 +223,34 @@ function Get-WingetExitCodeInfo {
 # ---------------------------[ Winget Path Resolver ]---------------------------
 function Get-WingetPath {
     $wingetBase = "$env:ProgramW6432\WindowsApps"
-    Write-Log "Resolving Winget path from: $wingetBase" -Tag "Debug"
+    Write-Log "WinGet path: resolve" -Tag "Debug"
     try {
         $wingetFolders = Get-ChildItem -Path $wingetBase -Directory -ErrorAction Stop |
             Where-Object { $_.Name -like 'Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe' }
-        Write-Log "x64 DesktopAppInstaller folders found: $($wingetFolders.Count)" -Tag "Debug"
 
         if (-not $wingetFolders) {
             $wingetFolders = Get-ChildItem -Path $wingetBase -Directory -ErrorAction Stop |
                 Where-Object { $_.Name -like 'Microsoft.DesktopAppInstaller_*_arm64__8wekyb3d8bbwe' }
-            Write-Log "arm64 DesktopAppInstaller folders found: $($wingetFolders.Count)" -Tag "Debug"
         }
 
         if (-not $wingetFolders) {
-            throw "No matching Winget installation folders found (x64 or arm64)."
+            throw "No DesktopAppInstaller folder (x64/arm64)."
         }
 
         $latestWingetFolder = $wingetFolders |
             Sort-Object CreationTime -Descending |
             Select-Object -First 1
-        Write-Log "Selected folder: $($latestWingetFolder.FullName)" -Tag "Debug"
 
         $resolvedPath = Join-Path $latestWingetFolder.FullName 'winget.exe'
 
         if (-not (Test-Path $resolvedPath)) {
-            throw "winget.exe not found at expected location."
+            throw "winget.exe missing under $($latestWingetFolder.FullName)"
         }
-        Write-Log "Winget executable path: $resolvedPath" -Tag "Debug"
-
+        Write-Log "WinGet path: $resolvedPath" -Tag "Debug"
         return $resolvedPath
     }
     catch {
-        Write-Log "Failed to resolve Winget path: $_" -Tag "Error"
-        Write-Log "Exception type: $($_.Exception.GetType().FullName)" -Tag "Debug"
+        Write-Log "WinGet path: $_" -Tag "Error"
         Complete-Script -ExitCode 1
     }
 }
@@ -263,38 +262,46 @@ function Test-WingetVersion {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$wingetPath)
 
+    Write-Log "WinGet check" -Tag "Debug"
     $versionOutput = & $wingetPath --version 2>&1
     $exitCode = $LASTEXITCODE
     $versionString = ($versionOutput | Out-String).Trim()
     $isHealthy = ($exitCode -eq 0)
-    Write-Log "Winget --version exit code: $exitCode; output length: $($versionString.Length)" -Tag "Debug"
+    if (-not $isHealthy) {
+        Write-Log "WinGet --version: exit $exitCode" -Tag "Debug"
+    }
     return @{ IsHealthy = $isHealthy; Version = $versionString; ExitCode = $exitCode }
 }
 
 # ---------------------------[ Script Start ]---------------------------
-Write-Log "======== Install Script Started ========" -Tag "Start"
-Write-Log "ComputerName: $env:COMPUTERNAME | User: $env:USERNAME | Application: $applicationName" -Tag "Info"
-Write-Log "Winget App ID: $wingetAppId | Install context: $installContext" -Tag "Info"
+Write-Log "==================== Start ====================" -Tag "Start"
+Write-Log "Host $env:COMPUTERNAME | $env:USERNAME | $applicationName" -Tag "Info"
+Write-Log "Id $wingetAppId | Context $installContext" -Tag "Info"
 
 # ---------------------------[ Winget Install ]---------------------------
 # User context: call winget directly (available in PATH). System context: resolve path from WindowsApps.
 $isUserContext = ($installContext -eq 'user')
 $wingetExe = if ($isUserContext) { 'winget' } else { (Get-WingetPath) }
-if (-not $isUserContext) { Write-Log "Resolved Winget path (system context)." -Tag "Get" }
+if (-not $isUserContext) { Write-Log "WinGet path OK (system)" -Tag "Get" }
 
 try {
-    Write-Log "Entering install try block. wingetAppId=$wingetAppId | context=$installContext" -Tag "Debug"
     $wingetCheck = Test-WingetVersion -wingetPath $wingetExe
-    Write-Log "Winget version: $($wingetCheck.Version)" -Tag "Info"
+    if ($wingetCheck.IsHealthy) {
+        $verLine = $wingetCheck.Version -split "`r?`n" | Where-Object { $_ } | Select-Object -First 1
+        if ($verLine -match '(\d+\.\d+(?:\.\d+)?(?:\.\d+)?)') {
+            Write-Log "WinGet: v$($matches[1])" -Tag "Success"
+        }
+        else {
+            Write-Log "WinGet OK" -Tag "Success"
+        }
+    }
     if (-not $wingetCheck.IsHealthy) {
-        Write-Log "Winget version check failed. Restart your computer so Intune can retry, or run the Winget repair script (e.g. Winget - System Context)." -Tag "Error"
-        Write-Log "Exit code from winget --version: $($wingetCheck.ExitCode)" -Tag "Debug"
+        Write-Log "WinGet unavailable (exit $($wingetCheck.ExitCode)); retry later or repair App Installer / system context" -Tag "Error"
         Complete-Script -ExitCode 0
     }
-    Write-Log "Winget version check passed." -Tag "Debug"
 
     # ---------------------------[ Retry Engine ]---------------------------
-    # Workaround flags – each is applied at most once. The engine loops until success or
+    # Workaround flags - each is applied at most once. The engine loops until success or
     # no more workarounds remain. Every winget invocation is wrapped with the in-progress
     # wait loop so that "another installation in progress" is handled consistently.
     $defaultScope      = if ($isUserContext) { 'user' } else { 'machine' }
@@ -307,7 +314,8 @@ try {
     $inProgressDelaySeconds = 120
 
     if (-not [string]::IsNullOrWhiteSpace($installOverride)) {
-        Write-Log "Using install override: $installOverride" -Tag "Info"
+        Write-Log "Override: set" -Tag "Info"
+        Write-Log "$installOverride" -Tag "Debug"
     }
 
     while ($true) {
@@ -328,14 +336,14 @@ try {
         $inProgressCount = 0
         do {
             if ($inProgressCount -gt 0) {
-                Write-Log "Another installation is in progress. Waiting $inProgressDelaySeconds seconds before retry $inProgressCount of $maxInProgressRetries..." -Tag "Info"
+                Write-Log "Install busy; wait ${inProgressDelaySeconds}s ($inProgressCount/$maxInProgressRetries)" -Tag "Info"
                 Start-Sleep -Seconds $inProgressDelaySeconds
             }
 
-            $runLabel = "Installing ($attemptLabel)"
-            if ($inProgressCount -gt 0) { $runLabel += " [in-progress retry $inProgressCount/$maxInProgressRetries]" }
-            Write-Log "$runLabel." -Tag "Run"
-            Write-Log "Invoking: winget $($currentArgs -join ' ')" -Tag "Debug"
+            $runLabel = "Install ($attemptLabel)"
+            if ($inProgressCount -gt 0) { $runLabel += " [busy $inProgressCount/$maxInProgressRetries]" }
+            Write-Log "$runLabel" -Tag "Run"
+            Write-Log "winget $($currentArgs -join ' ')" -Tag "Debug"
 
             # Use ProcessStartInfo so --override is passed as exactly one argument.
             # PowerShell's & splatting can split args with spaces; winget fails with
@@ -354,32 +362,32 @@ try {
             $p.WaitForExit()
             $exitCode = $p.ExitCode
             $exitInfo = Get-WingetExitCodeInfo -exitCode $exitCode
-            Write-Log "Winget exit code: $exitCode ($($exitInfo.Description)); Category=$($exitInfo.Category)" -Tag "Info"
+            Write-Log "Exit $exitCode | $($exitInfo.Category) | $($exitInfo.Description)" -Tag "Info"
 
             if ($exitCode -ne -1978334974) { break }
 
             $inProgressCount++
         } while ($inProgressCount -le $maxInProgressRetries)
 
-        # Still blocked after all in-progress retries – exit 0 so Intune can retry later
+        # Still blocked after all in-progress retries; exit 0 so Intune can retry later
         if ($exitCode -eq -1978334974) {
-            Write-Log "Installation still blocked after $maxInProgressRetries retries (another installation in progress). Exiting 0 for Intune retry." -Tag "Error"
+            Write-Log "Install busy (max waits); exit 0 for retry" -Tag "Error"
             Complete-Script -ExitCode 0
         }
 
         # --- Success ---
         if ($exitCode -eq 0 -or $exitInfo.Category -eq "Success") {
             if ($triedNoScope -or $triedSource) {
-                Write-Log "Installation completed successfully after workaround ($attemptLabel)." -Tag "Success"
+                Write-Log "Install OK ($attemptLabel)" -Tag "Success"
             } else {
-                Write-Log "Installation completed successfully." -Tag "Success"
+                Write-Log "Install OK" -Tag "Success"
             }
             Complete-Script -ExitCode 0
         }
 
-        # --- RetryLater (transient) – exit 0 so Intune can retry later ---
+        # --- RetryLater (transient); exit 0 so Intune can retry later ---
         if ($exitInfo.Category -eq "RetryLater") {
-            Write-Log "Install blocked (retry later): $($exitInfo.Description). Exiting 0 for Intune retry." -Tag "Info"
+            Write-Log "Defer: $($exitInfo.Description); exit 0" -Tag "Info"
             Complete-Script -ExitCode 0
         }
 
@@ -387,30 +395,30 @@ try {
         $workaroundApplied = $false
 
         if ($exitInfo.Category -eq "RetryScope" -and -not $triedNoScope) {
-            Write-Log "No applicable installer for scope $defaultScope; retrying without --scope." -Tag "Info"
+            Write-Log "Retry: no --scope" -Tag "Info"
             $useScope      = $false
             $triedNoScope  = $true
             $workaroundApplied = $true
         }
 
         if ($exitInfo.Category -eq "RetrySource" -and -not $triedSource) {
-            Write-Log "Pinned certificate mismatch detected; retrying with --source winget." -Tag "Info"
+            Write-Log "Retry: --source winget" -Tag "Info"
             $useSource     = $true
             $triedSource   = $true
             $workaroundApplied = $true
         }
 
         if (-not $workaroundApplied) {
-            Write-Log "No further workarounds available for: $($exitInfo.Description) (Category=$($exitInfo.Category))" -Tag "Debug"
-            Write-Log "Install failed: $($exitInfo.Description)" -Tag "Error"
+            Write-Log "No workaround: $($exitInfo.Category) $($exitInfo.Description)" -Tag "Debug"
+            Write-Log "Fail: $($exitInfo.Description)" -Tag "Error"
             Complete-Script -ExitCode 1
         }
 
-        Write-Log "Workaround applied; retrying..." -Tag "Debug"
+        Write-Log "Retry winget" -Tag "Debug"
     }
 }
 catch {
-    Write-Log "Install failed. Exception: $_" -Tag "Error"
-    Write-Log "Exception details: $($_.ScriptStackTrace)" -Tag "Debug"
+    Write-Log "Unhandled: $_" -Tag "Error"
+    Write-Log "$($_.ScriptStackTrace)" -Tag "Debug"
     Complete-Script -ExitCode 1
 }

@@ -23,10 +23,15 @@ if ($installContext -eq 'user') {
 $logFile          = "$logFileDirectory\$logFileName"
 
 if ($enableLogFile -and -not (Test-Path -Path $logFileDirectory)) {
-    New-Item -ItemType Directory -Path $logFileDirectory -Force | Out-Null
+    try {
+        $null = New-Item -ItemType Directory -Path $logFileDirectory -Force -ErrorAction Stop
+    }
+    catch {
+        Write-Warning "Failed to create log directory '$logFileDirectory': $($_.Exception.Message)"
+    }
 }
 
-# ---------------------------[ Logging Function ]---------------------------
+# Logging aligned with https://github.com/Barg0/Intune-WinGet-Update (compact line, I/O warnings).
 function Write-Log {
     [CmdletBinding()]
     param (
@@ -36,7 +41,6 @@ function Write-Log {
 
     if (-not $log) { return }
 
-    # Per-tag switches
     if (($Tag -eq "Debug") -and (-not $logDebug)) { return }
     if (($Tag -eq "Get")   -and (-not $logGet))   { return }
     if (($Tag -eq "Run")   -and (-not $logRun))   { return }
@@ -49,7 +53,7 @@ function Write-Log {
         $rawTag = $rawTag.PadRight(7)
     }
     else {
-        $rawTag = "Error  "
+        $rawTag = "Error "
     }
 
     $color = switch ($rawTag.Trim()) {
@@ -64,19 +68,19 @@ function Write-Log {
         default   { "White" }
     }
 
-    $logMessage = "$timestamp [  $rawTag ] $Message"
+    $logMessage = "$timestamp [ $rawTag ] $Message"
 
     if ($enableLogFile) {
         try {
-            Add-Content -Path $logFile -Value $logMessage -Encoding UTF8
+            Add-Content -Path $logFile -Value $logMessage -Encoding UTF8 -ErrorAction Stop
         }
         catch {
-            # Logging must never block script execution
+            Write-Warning "Failed to write to log file: $($_.Exception.Message)"
         }
     }
 
     Write-Host "$timestamp " -NoNewline
-    Write-Host "[  " -NoNewline -ForegroundColor White
+    Write-Host "[ " -NoNewline -ForegroundColor White
     Write-Host "$rawTag" -NoNewline -ForegroundColor $color
     Write-Host " ] " -NoNewline -ForegroundColor White
     Write-Host "$Message"
@@ -89,9 +93,9 @@ function Complete-Script {
     $scriptEndTime = Get-Date
     $duration      = $scriptEndTime - $scriptStartTime
 
-    Write-Log "Script execution time: $($duration.ToString('hh\:mm\:ss\.ff'))" -Tag "Info"
-    Write-Log "Exit Code: $ExitCode" -Tag "Info"
-    Write-Log "======== Detection Script Completed ========" -Tag "End"
+    Write-Log "Runtime $($duration.ToString('hh\:mm\:ss\.ff'))" -Tag "Info"
+    Write-Log "Exit $ExitCode" -Tag "Info"
+    Write-Log "==================== End ====================" -Tag "End"
 
     exit $ExitCode
 }
@@ -99,39 +103,34 @@ function Complete-Script {
 # ---------------------------[ Winget Path Resolver ]---------------------------
 function Get-WingetPath {
     $wingetBase = "$env:ProgramW6432\WindowsApps"
-    Write-Log "Resolving Winget path from: $wingetBase" -Tag "Debug"
+    Write-Log "WinGet path: resolve" -Tag "Debug"
     try {
         $wingetFolders = Get-ChildItem -Path $wingetBase -Directory -ErrorAction Stop |
             Where-Object { $_.Name -like 'Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe' }
-        Write-Log "x64 DesktopAppInstaller folders found: $($wingetFolders.Count)" -Tag "Debug"
 
         if (-not $wingetFolders) {
             $wingetFolders = Get-ChildItem -Path $wingetBase -Directory -ErrorAction Stop |
                 Where-Object { $_.Name -like 'Microsoft.DesktopAppInstaller_*_arm64__8wekyb3d8bbwe' }
-            Write-Log "arm64 DesktopAppInstaller folders found: $($wingetFolders.Count)" -Tag "Debug"
         }
 
         if (-not $wingetFolders) {
-            throw "No matching Winget installation folders found (x64 or arm64)."
+            throw "No DesktopAppInstaller folder (x64/arm64)."
         }
 
         $latestWingetFolder = $wingetFolders |
             Sort-Object CreationTime -Descending |
             Select-Object -First 1
-        Write-Log "Selected folder: $($latestWingetFolder.FullName)" -Tag "Debug"
 
         $resolvedPath = Join-Path $latestWingetFolder.FullName 'winget.exe'
 
         if (-not (Test-Path $resolvedPath)) {
-            throw "winget.exe not found at expected location."
+            throw "winget.exe missing under $($latestWingetFolder.FullName)"
         }
-        Write-Log "Winget executable path: $resolvedPath" -Tag "Debug"
-
+        Write-Log "WinGet path: $resolvedPath" -Tag "Debug"
         return $resolvedPath
     }
     catch {
-        Write-Log "Failed to resolve Winget path: $_" -Tag "Error"
-        Write-Log "Exception type: $($_.Exception.GetType().FullName)" -Tag "Debug"
+        Write-Log "WinGet path: $_" -Tag "Error"
         Complete-Script -ExitCode 1
     }
 }
@@ -142,38 +141,46 @@ function Test-WingetVersion {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$wingetPath)
 
+    Write-Log "WinGet check" -Tag "Debug"
     $versionOutput = & $wingetPath --version 2>&1
     $exitCode = $LASTEXITCODE
     $versionString = ($versionOutput | Out-String).Trim()
     $isHealthy = ($exitCode -eq 0)
-    Write-Log "Winget --version exit code: $exitCode; output length: $($versionString.Length)" -Tag "Debug"
+    if (-not $isHealthy) {
+        Write-Log "WinGet --version: exit $exitCode" -Tag "Debug"
+    }
     return @{ IsHealthy = $isHealthy; Version = $versionString; ExitCode = $exitCode }
 }
 
 # ---------------------------[ Script Start ]---------------------------
-Write-Log "======== Detection Script Started ========" -Tag "Start"
-Write-Log "ComputerName: $env:COMPUTERNAME | User: $env:USERNAME | Application: $applicationName" -Tag "Info"
-Write-Log "Winget App ID: $wingetAppId | Install context: $installContext" -Tag "Info"
+Write-Log "==================== Start ====================" -Tag "Start"
+Write-Log "Host $env:COMPUTERNAME | $env:USERNAME | $applicationName" -Tag "Info"
+Write-Log "Id $wingetAppId | Context $installContext" -Tag "Info"
 
 # ---------------------------[ App Detection ]---------------------------
 # WinGet list: exit 0 = package found; -1978335212 (NO_APPLICATIONS_FOUND) = not installed
 $isUserContext = ($installContext -eq 'user')
 $wingetExe = if ($isUserContext) { 'winget' } else { (Get-WingetPath) }
-if (-not $isUserContext) { Write-Log "Resolved Winget path (system context)." -Tag "Get" }
+if (-not $isUserContext) { Write-Log "WinGet path OK (system)" -Tag "Get" }
 
 try {
-    Write-Log "Entering detection try block. wingetAppId=$wingetAppId | context=$installContext" -Tag "Debug"
     $wingetCheck = Test-WingetVersion -wingetPath $wingetExe
-    Write-Log "Winget version: $($wingetCheck.Version)" -Tag "Info"
+    if ($wingetCheck.IsHealthy) {
+        $verLine = $wingetCheck.Version -split "`r?`n" | Where-Object { $_ } | Select-Object -First 1
+        if ($verLine -match '(\d+\.\d+(?:\.\d+)?(?:\.\d+)?)') {
+            Write-Log "WinGet: v$($matches[1])" -Tag "Success"
+        }
+        else {
+            Write-Log "WinGet OK" -Tag "Success"
+        }
+    }
     if (-not $wingetCheck.IsHealthy) {
-        Write-Log "Winget version check failed. Restart your computer so Intune can retry, or run the Winget repair script (e.g. Winget - System Context)." -Tag "Error"
-        Write-Log "Exit code from winget --version: $($wingetCheck.ExitCode)" -Tag "Debug"
+        Write-Log "WinGet unavailable (exit $($wingetCheck.ExitCode)); retry later or repair App Installer / system context" -Tag "Error"
         Complete-Script -ExitCode 0
     }
-    Write-Log "Winget version check passed." -Tag "Debug"
 
-    Write-Log "Checking installed packages for: $wingetAppId" -Tag "Run"
-    Write-Log "Invoking: winget list -e --id $wingetAppId --accept-source-agreements" -Tag "Debug"
+    Write-Log "List: $wingetAppId" -Tag "Run"
+    Write-Log "winget list -e --id ..." -Tag "Debug"
 
     # Set UTF-8 encoding so winget output (e.g. app names with Unicode) is captured correctly.
     # Prevents garbled characters in Debug logs and ensures -match works reliably.
@@ -187,28 +194,32 @@ try {
         [Console]::OutputEncoding = $previousOutputEncoding
     }
 
-    Write-Log "winget list exit code: $wingetExitCode" -Tag "Debug"
-    $outStr = $installedOutput | Out-String
-    Write-Log "Output (first 500 chars): $($outStr.Substring(0, [Math]::Min(500, $outStr.Length)))" -Tag "Debug"
+    Write-Log "List exit: $wingetExitCode" -Tag "Debug"
+    if ($logDebug) {
+        $outStr = ($installedOutput | Out-String).Trim()
+        if ($outStr.Length -gt 0) {
+            $snippet = $outStr.Substring(0, [Math]::Min(500, $outStr.Length))
+            Write-Log "List output (500): $snippet" -Tag "Debug"
+        }
+    }
 
     if ($wingetExitCode -eq -1978335212 -and $installedOutput -match 'No installed package found matching input criteria.') {
-        Write-Log "NO_APPLICATIONS_FOUND; package not installed." -Tag "Debug"
-        Write-Log "App NOT detected - $applicationName is NOT installed." -Tag "Info"
+        Write-Log "List: not installed (-1978335212)" -Tag "Debug"
+        Write-Log "Detect: not installed" -Tag "Info"
         Complete-Script -ExitCode 1
     }
 
     if ($wingetExitCode -ne 0) {
-        Write-Log "Winget list failed with exit code: $wingetExitCode" -Tag "Error"
-        Write-Log "Raw output: $installedOutput" -Tag "Debug"
+        Write-Log "List failed: exit $wingetExitCode" -Tag "Error"
+        Write-Log "$($installedOutput | Out-String)" -Tag "Debug"
         Complete-Script -ExitCode 1
     }
 
-    Write-Log "Package found in winget list; app is installed." -Tag "Debug"
-    Write-Log "App detected - $applicationName IS installed." -Tag "Success"
+    Write-Log "Detect: installed" -Tag "Success"
     Complete-Script -ExitCode 0
 }
 catch {
-    Write-Log "Exception during detection: $_" -Tag "Error"
-    Write-Log "Exception details: $($_.ScriptStackTrace)" -Tag "Debug"
+    Write-Log "Unhandled: $_" -Tag "Error"
+    Write-Log "$($_.ScriptStackTrace)" -Tag "Debug"
     Complete-Script -ExitCode 1
 }
