@@ -161,7 +161,7 @@ function Install-GraphSdkModules {
         Install-Module @installParams
     }
     catch {
-        Write-Log "Graph: Install-Module failed — $($_.Exception.Message)" -Tag "Error"
+        Write-Log "Graph: Install-Module failed  -  $($_.Exception.Message)" -Tag "Error"
         throw "Install Graph modules manually: Install-Module -Name Microsoft.Graph,Microsoft.Graph.Beta -Scope CurrentUser"
     }
     if (-not (Test-GraphSdkModulesPresent)) {
@@ -326,7 +326,7 @@ function Get-AppFolderPathForWingetId {
             }
         }
         catch {
-            Write-Log "Read failed: $jsonPath — $($_.Exception.Message)" -Tag "Debug"
+            Write-Log "Read failed: $jsonPath  -  $($_.Exception.Message)" -Tag "Debug"
         }
     }
     return $null
@@ -340,10 +340,10 @@ function Add-MobileAppDependencyRelationships {
     $MainAppId = $MainAppId.Trim()
     $ids = @($TargetAppIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Select-Object -Unique)
     if ($ids.Count -eq 0) { return }
-    Write-Log "Dependencies: $($ids.Count) → $MainAppId" -Tag "Info"
+    Write-Log "Dependencies: $($ids.Count) -> $MainAppId" -Tag "Info"
     # AppLifecycle: POST .../mobileApps/{id}/relationships is not routed ("No OData route exists").
     # Use updateRelationships (see https://learn.microsoft.com/en-us/graph/api/intune-shared-mobileapp-updaterelationships):
-    # one POST replaces the app's direct relationship set — include all dependencies in one relationships[] array.
+    # one POST replaces the app's direct relationship set; include all dependencies in one relationships[] array.
     $relationships = [System.Collections.ArrayList]::new()
     try {
         $relsResponse = Invoke-GraphApi -method Get -resource "/deviceAppManagement/mobileApps/$MainAppId/relationships"
@@ -355,7 +355,7 @@ function Add-MobileAppDependencyRelationships {
         }
     }
     catch {
-        Write-Log "Dependencies: GET relationships failed (supersedence merge skipped) — $_" -Tag "Debug"
+        Write-Log "Dependencies: GET relationships failed (supersedence merge skipped) - $_" -Tag "Debug"
     }
     foreach ($tid in $ids) {
         [void]$relationships.Add(@{
@@ -374,7 +374,7 @@ function Add-MobileAppDependencyRelationships {
 
 # ---------------------------[ Icon base64 ]---------------------------
 # Tries each candidate in order: exact match (Name.png), then prefix match (longest base name wins).
-# Candidates should include WinGet catalog name (displayName), WingetId, and package folder safe name — they often differ.
+# Candidates should include WinGet catalog name (displayName), WingetId, and package folder safe name  -  they often differ.
 function Get-IconBase64 {
     param(
         [Parameter(Mandatory)][string[]]$CandidateAppNames,
@@ -770,14 +770,14 @@ function Invoke-Win32AppDeployment {
                         Write-Log "largeIcon: none" -Tag "Debug"
                     }
                 } catch {
-                    Write-Log "largeIcon: read failed — $_" -Tag "Debug"
+                    Write-Log "largeIcon: read failed  -  $_" -Tag "Debug"
                 }
             }
             $null = Invoke-GraphApi -method Patch -resource "/deviceAppManagement/mobileApps/$appId" -body $fullBody
             Write-Log "Metadata: patched" -Tag "Debug"
         }
 
-        # 2. Request content version (412/ConditionNotMet until Intune finishes a prior revision — retry)
+        # 2. Request content version (412/ConditionNotMet until Intune finishes a prior revision  -  retry)
         $versionResource = "/deviceAppManagement/mobileApps/$appId/microsoft.graph.win32LobApp/contentVersions"
         $contentVersion = $null
         for ($cvAttempt = 1; $cvAttempt -le $contentVersionPostAttempts; $cvAttempt++) {
@@ -870,7 +870,7 @@ function Invoke-Win32AppDeployment {
                 $null = Invoke-GraphApi -method Patch -resource "/deviceAppManagement/mobileApps/$appId" -body $iconReapply
                 Write-Log "largeIcon: reapplied" -Tag "Get"
             } catch {
-                Write-Log "largeIcon: patch failed — $_" -Tag "Error"
+                Write-Log "largeIcon: patch failed  -  $_" -Tag "Error"
             }
         }
 
@@ -880,7 +880,7 @@ function Invoke-Win32AppDeployment {
             $null = Invoke-GraphApi -method Post -resource "/deviceAppManagement/mobileApps/$appId/enableApplicableArchitectures" -body $enableArchBody
             Write-Log "Arch: $applicableArchitectures" -Tag "Debug"
         } catch {
-            Write-Log "Arch: failed — $_" -Tag "Debug"
+            Write-Log "Arch: failed  -  $_" -Tag "Debug"
         }
 
         Write-Log "Deployed: $displayName" -Tag "Success"
@@ -891,7 +891,7 @@ function Invoke-Win32AppDeployment {
                     Set-AppGroupAssignments -appId $appId -displayName $displayName
                 }
                 catch {
-                    Write-Log "Groups: failed — $_" -Tag "Error"
+                    Write-Log "Groups: failed  -  $_" -Tag "Error"
                 }
             }
             elseif ($isOverwrite) {
@@ -907,7 +907,7 @@ function Invoke-Win32AppDeployment {
 
         return [string]$appId.Trim()
     } catch {
-        Write-Log "Failed: $displayName — $_" -Tag "Error"
+        Write-Log "Failed: $displayName  -  $_" -Tag "Error"
         return $false
     } finally {
         if ($winMetadata.TempDir -and (Test-Path -LiteralPath $winMetadata.TempDir)) {
@@ -931,7 +931,7 @@ if (-not (Test-Path -LiteralPath $csvPath)) {
 }
 
 try { Initialize-GraphConnection } catch {
-    Write-Log "Graph: failed — $_" -Tag "Error"
+    Write-Log "Graph: failed  -  $_" -Tag "Error"
     Complete-Script -ExitCode 1
 }
 
@@ -970,7 +970,7 @@ foreach ($row in $rows) {
         $mainAppInfo = Get-Content -LiteralPath $infoMainPath -Raw -Encoding UTF8 | ConvertFrom-Json
     }
     catch {
-        Write-Log "Read failed: info.json ($wingetId) — $($_.Exception.Message)" -Tag "Error"
+        Write-Log "Read failed: info.json ($wingetId)  -  $($_.Exception.Message)" -Tag "Error"
         $failedCount++
         continue
     }
@@ -995,7 +995,7 @@ foreach ($row in $rows) {
             $depInfo = Get-Content -LiteralPath $depInfoPath -Raw -Encoding UTF8 | ConvertFrom-Json
         }
         catch {
-            Write-Log "Read failed: dep info.json ($($depDir.Name)) — $($_.Exception.Message)" -Tag "Error"
+            Write-Log "Read failed: dep info.json ($($depDir.Name))  -  $($_.Exception.Message)" -Tag "Error"
             $failedCount++
             continue
         }
@@ -1036,7 +1036,7 @@ foreach ($row in $rows) {
                 Add-MobileAppDependencyRelationships -MainAppId ([string]$mainResult) -TargetAppIds @($depTargetIds)
             }
             catch {
-                Write-Log "Dependencies: failed — $_" -Tag "Error"
+                Write-Log "Dependencies: failed  -  $_" -Tag "Error"
             }
         }
         if ($deferMainGroups) {
@@ -1045,7 +1045,7 @@ foreach ($row in $rows) {
                     Set-AppGroupAssignments -appId ([string]$mainResult) -displayName $mainDisplayName
                 }
                 catch {
-                    Write-Log "Deferred groups: failed — $_" -Tag "Error"
+                    Write-Log "Deferred groups: failed  -  $_" -Tag "Error"
                 }
             }
             elseif ($mainExistingBefore) {
@@ -1065,5 +1065,5 @@ foreach ($row in $rows) {
     }
 }
 
-Write-Log "Summary: $deployedCount ok · $skippedCount skipped · $failedCount failed" -Tag "Info"
+Write-Log "Summary: $deployedCount ok | $skippedCount skipped | $failedCount failed" -Tag "Info"
 Complete-Script -ExitCode $(if ($failedCount -gt 0) { 1 } else { 0 })
