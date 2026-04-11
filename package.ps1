@@ -75,7 +75,7 @@ function Write-Log {
     }
 
     Write-Host "$timestamp " -NoNewline
-    Write-Host "[  " -NoNewline -ForegroundColor White
+    Write-Host "[ " -NoNewline -ForegroundColor White
     Write-Host "$rawTag" -NoNewline -ForegroundColor $color
     Write-Host " ] " -NoNewline -ForegroundColor White
     Write-Host "$Message"
@@ -88,9 +88,9 @@ function Complete-Script {
     $scriptEndTime = Get-Date
     $duration      = $scriptEndTime - $scriptStartTime
 
-    Write-Log "Script execution time: $($duration.ToString('hh\:mm\:ss\.ff'))" -Tag "Info"
-    Write-Log "Exit Code: $ExitCode" -Tag "Info"
-    Write-Log "======== Script Completed ========" -Tag "End"
+    Write-Log "Runtime $($duration.ToString('hh\:mm\:ss\.ff'))" -Tag "Info"
+    Write-Log "Exit $ExitCode" -Tag "Info"
+    Write-Log "==================== End ====================" -Tag "End"
 
     exit $ExitCode
 }
@@ -101,33 +101,53 @@ $csvPath               = Join-Path $rootDir 'apps.csv'
 $templatesPath         = Join-Path $rootDir 'templates'
 $outputRoot            = Join-Path $rootDir 'apps'
 $intuneWinAppUtilPath  = Join-Path $rootDir 'IntuneWinAppUtil.exe'
+# Official binary (same as cloning https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool )
+$intuneWinAppUtilDownloadUrl = 'https://raw.githubusercontent.com/microsoft/Microsoft-Win32-Content-Prep-Tool/master/IntuneWinAppUtil.exe'
 
 # ---------------------------[ Script Start ]---------------------------
-Write-Log "======== Script Started ========" -Tag "Start"
+Write-Log "==================== Start ====================" -Tag "Start"
 Write-Log "ComputerName: $env:COMPUTERNAME | User: $env:USERNAME | Script: $scriptName" -Tag "Info"
-Write-Log "Config: rootDir=$rootDir | csvPath=$csvPath | outputRoot=$outputRoot" -Tag "Debug"
-Write-Log "Config: keepPlainScripts=$keepPlainScripts | quiet=$quiet | logDebug=$logDebug | fetchWingetShow=$fetchWingetShow | forceRepack=$forceRepack" -Tag "Debug"
+Write-Log "rootDir: $rootDir" -Tag "Debug"
+Write-Log "forceRepack: $forceRepack | fetchWinget: $fetchWingetShow" -Tag "Debug"
 
 #region --- Helpers ---
+function Install-IntuneWinAppUtil {
+    param([Parameter(Mandatory)] [string]$DestinationPath)
+    if (Test-Path -LiteralPath $DestinationPath) { return }
+    Write-Log "IntuneWinAppUtil: download" -Tag "Run"
+    try {
+        if ($PSVersionTable.PSVersion.Major -lt 6) {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        }
+        Invoke-WebRequest -Uri $intuneWinAppUtilDownloadUrl -OutFile $DestinationPath -UseBasicParsing
+    }
+    catch {
+        Write-Log "IntuneWinAppUtil: download failed — $($_.Exception.Message)" -Tag "Error"
+        Complete-Script -ExitCode 1
+    }
+    if (-not (Test-Path -LiteralPath $DestinationPath)) {
+        Write-Log "IntuneWinAppUtil: missing after download" -Tag "Error"
+        Complete-Script -ExitCode 1
+    }
+    Write-Log "IntuneWinAppUtil: saved" -Tag "Success"
+}
+
 function Assert-Path {
     [CmdletBinding()]
     param([string]$path, [string]$description = "Path")
-    Write-Log "Assert-Path: checking path '$path' ($description)" -Tag "Debug"
+    Write-Log "Check: $description" -Tag "Debug"
     if (-not (Test-Path -LiteralPath $path)) {
-        Write-Log "$description not found: $path" -Tag "Error"
+        Write-Log "Missing: $description" -Tag "Error"
         Complete-Script -ExitCode 1
     }
-    Write-Log "Assert-Path: path exists '$path'" -Tag "Debug"
 }
 
 function Get-SafeName {
     [CmdletBinding()]
     param([string]$name)
-    Write-Log "Get-SafeName: input name='$name'" -Tag "Debug"
     $invalid = [System.IO.Path]::GetInvalidFileNameChars() -join ''
     $regex   = "[" + [Regex]::Escape($invalid) + "]"
     $result  = ($name -replace $regex, '_').Trim()
-    Write-Log "Get-SafeName: output safeName='$result'" -Tag "Debug"
     return $result
 }
 
@@ -142,11 +162,9 @@ function Set-Placeholders {
         [string]$installOverride = ''
     )
 
-    Write-Log "Set-Placeholders: templatePath='$templatePath' -> outputPath='$outputPath'" -Tag "Debug"
-    Write-Log "Set-Placeholders: applicationName='$applicationName' | wingetAppId='$wingetAppId' | installContext='$installContext'" -Tag "Debug"
+    Write-Log "Template: $([IO.Path]::GetFileName($templatePath))" -Tag "Debug"
 
     $content = Get-Content -LiteralPath $templatePath -Raw
-    Write-Log "Set-Placeholders: read template ($($content.Length) chars)" -Tag "Debug"
 
     $content = $content.Replace('__APPLICATION_NAME__', $applicationName)
     $content = $content.Replace('__WINGET_APP_ID__', $wingetAppId)
@@ -170,7 +188,6 @@ function Set-Placeholders {
     $content = $content -replace '(?m)^\s*\$installContext\s*=\s*.*$', "`$installContext = '$($sq.ctx)'"
 
     Set-Content -LiteralPath $outputPath -Value $content -Encoding UTF8
-    Write-Log "Set-Placeholders: wrote output file '$outputPath'" -Tag "Debug"
 }
 
 function New-IntuneWinPackage {
@@ -184,19 +201,13 @@ function New-IntuneWinPackage {
     $intuneArgs = @('-c', "`"$sourceFolder`"", '-s', "`"$setupFile`"", '-o', "`"$outputFolder`"")
     if ($quiet) { $intuneArgs += '-q' }
 
-    Write-Log "New-IntuneWinPackage: sourceFolder='$sourceFolder' | setupFile='$setupFile' | outputFolder='$outputFolder'" -Tag "Debug"
-    Write-Log "New-IntuneWinPackage: IntuneWinAppUtil path='$intuneWinAppUtilPath'" -Tag "Debug"
-    Write-Log "New-IntuneWinPackage: arguments: $($intuneArgs -join ' ')" -Tag "Debug"
-    Write-Log "Running IntuneWinAppUtil.exe (packaging)" -Tag "Run"
-
     $process = Start-Process -FilePath $intuneWinAppUtilPath -ArgumentList $intuneArgs -Wait -PassThru -WindowStyle Hidden
 
-    Write-Log "New-IntuneWinPackage: process exit code=$($process.ExitCode)" -Tag "Debug"
+    Write-Log "Exit: $($process.ExitCode)" -Tag "Debug"
     if ($process.ExitCode -ne 0) {
-        Write-Log "IntuneWinAppUtil exited with code $($process.ExitCode)" -Tag "Error"
+        Write-Log "IntuneWinAppUtil exit: $($process.ExitCode)" -Tag "Error"
         throw "Packaging failed."
     }
-    Write-Log "New-IntuneWinPackage: completed successfully" -Tag "Debug"
 }
 
 function ConvertFrom-WingetLocalizedOutput {
@@ -210,14 +221,14 @@ function ConvertFrom-WingetLocalizedOutput {
 
     $langPath = Join-Path (Join-Path $PSScriptRoot 'jsons') 'language.json'
     if (-not (Test-Path -LiteralPath $langPath)) {
-        Write-Log "ConvertFrom-WingetLocalizedOutput: language.json not found, using raw output" -Tag "Debug"
+        Write-Log "language.json not found" -Tag "Debug"
         return $RawOutput
     }
 
     try {
         $lang = Get-Content -LiteralPath $langPath -Raw -Encoding UTF8 | ConvertFrom-Json
     } catch {
-        Write-Log "ConvertFrom-WingetLocalizedOutput: failed to load language.json: $($_.Exception.Message)" -Tag "Debug"
+        Write-Log "language.json load failed: $($_.Exception.Message)" -Tag "Debug"
         return $RawOutput
     }
 
@@ -231,7 +242,7 @@ function ConvertFrom-WingetLocalizedOutput {
     }
 
     if (-not $localeKey) {
-        Write-Log "ConvertFrom-WingetLocalizedOutput: no mapping for culture '$culture', using raw output" -Tag "Debug"
+        Write-Log "No locale map: $culture" -Tag "Debug"
         return $RawOutput
     }
 
@@ -284,6 +295,143 @@ function Invoke-WingetShowRaw {
         return @{ Output = $out; ExitCode = $LASTEXITCODE }
     } finally {
         [Console]::OutputEncoding = $prevEnc
+    }
+}
+
+function Get-WingetDependencyBlocks {
+    <#
+    .SYNOPSIS
+        Parses the Dependencies section from normalized (English) winget show output.
+        Returns winget package IDs and other dependency lines for info.json only.
+    #>
+    param([Parameter(Mandatory)] [string]$NormalizedOutput)
+    $packageIds = [System.Collections.ArrayList]::new()
+    $other = [ordered]@{ }
+    if ([string]::IsNullOrWhiteSpace($NormalizedOutput)) {
+        return @{ PackageIds = @(); Other = $other }
+    }
+    $lines = $NormalizedOutput -split "`r?`n"
+    $start = -1
+    for ($k = 0; $k -lt $lines.Count; $k++) {
+        if ($lines[$k] -match '^\s*Dependencies:\s*$') {
+            $start = $k
+            break
+        }
+    }
+    if ($start -lt 0) {
+        return @{ PackageIds = @(); Other = $other }
+    }
+    $currentSubsection = $null
+    for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ($line -match '^\S') {
+            Write-Log "Deps: break @ $($line.Substring(0, [Math]::Min(40, $line.Length)))" -Tag "Debug"
+            break
+        }
+        if ($line -match '^\s+-\s+(Package Dependencies|Windows Features|Windows Libraries|External Dependencies):\s*$') {
+            $currentSubsection = $Matches[1]
+            Write-Log "Deps: $currentSubsection" -Tag "Debug"
+            continue
+        }
+        if ($line -match '^\s{8,}(\S+)\s*$') {
+            $token = $Matches[1]
+            if ($token -match ':') { continue }
+            if ($currentSubsection -eq 'Package Dependencies') {
+                [void]$packageIds.Add($token)
+                Write-Log "Deps: $token" -Tag "Debug"
+            }
+            elseif ($currentSubsection) {
+                if (-not $other[$currentSubsection]) {
+                    $other[$currentSubsection] = [System.Collections.ArrayList]::new()
+                }
+                [void]$other[$currentSubsection].Add($token)
+            }
+            continue
+        }
+    }
+    $otherOut = [ordered]@{ }
+    foreach ($key in $other.Keys) {
+        $arr = @($other[$key].ToArray())
+        if ($arr.Count -gt 0) { $otherOut[$key] = $arr }
+    }
+    return @{ PackageIds = @($packageIds.ToArray()); Other = $otherOut }
+}
+
+function Get-AppOutputFolderByWingetId {
+    param(
+        [Parameter(Mandatory)] [string]$OutputRoot,
+        [Parameter(Mandatory)] [string]$WingetId
+    )
+    if (-not (Test-Path -LiteralPath $OutputRoot)) { return $null }
+    $want = $WingetId.Trim()
+    foreach ($d in Get-ChildItem -LiteralPath $OutputRoot -Directory -ErrorAction SilentlyContinue) {
+        if ($d.Name -eq 'temp') { continue }
+        $jsonPath = Join-Path $d.FullName 'info.json'
+        if (-not (Test-Path -LiteralPath $jsonPath)) { continue }
+        try {
+            $info = Get-Content -LiteralPath $jsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $wid = if ($info.WingetId) { [string]$info.WingetId } else { '' }
+            if ($wid.Trim() -eq $want) {
+                return @{ Folder = $d.FullName; Info = $info }
+            }
+        }
+        catch {
+            Write-Log "Read failed: $jsonPath — $($_.Exception.Message)" -Tag "Debug"
+        }
+    }
+    return $null
+}
+
+function Get-WingetShowPackageMetadata {
+    <#
+    .SYNOPSIS
+        Probes winget show per architecture and returns parsed metadata plus dependency lists.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$wingetId)
+
+    $architecturesToProbe = @('x86', 'x64', 'arm64')
+    $supportedArches = [System.Collections.ArrayList]::new()
+    $metadata = $null
+    $normalizedForDeps = $null
+
+    foreach ($arch in $architecturesToProbe) {
+        $run = Invoke-WingetShowRaw -wingetId $wingetId -architecture $arch
+        if ($run.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($run.Output)) {
+            Write-Log "No output: $arch (exit $($run.ExitCode))" -Tag "Debug"
+            continue
+        }
+        $normalized = ConvertFrom-WingetLocalizedOutput -RawOutput $run.Output
+        if ($null -eq $normalized) { continue }
+        if ($normalized -match 'No package found|No applicable package|No applicable installer') { continue }
+
+        $parsed = ConvertFrom-WingetShowOutput -normalizedOutput $normalized
+        $parsed.Obj['Id'] = $wingetId
+
+        if ($parsed.HasInstaller) {
+            [void]$supportedArches.Add($arch)
+            Write-Log "  $arch : has installer" -Tag "Debug"
+        }
+        else {
+            Write-Log "  $arch : no installer" -Tag "Debug"
+        }
+        if (-not $metadata) {
+            $metadata = $parsed.Obj
+            $normalizedForDeps = $normalized
+        }
+    }
+
+    if ($supportedArches.Count -eq 0 -or -not $metadata) {
+        return $null
+    }
+
+    $depBlocks = Get-WingetDependencyBlocks -NormalizedOutput $normalizedForDeps
+    return @{
+        Metadata         = $metadata
+        SupportedArches  = @($supportedArches.ToArray())
+        Dependencies     = $depBlocks.PackageIds
+        DependenciesOther = $depBlocks.Other
     }
 }
 
@@ -393,56 +541,35 @@ function Export-WingetShowToJson {
     param(
         [Parameter(Mandatory)] [string]$wingetId,
         [Parameter(Mandatory)] [string]$appFolder,
-        [Parameter(Mandatory)] [string]$applicationName,
-        [string]$installContext = 'system'
+        [string]$installContext = 'system',
+        $precomputedPackageMetadata = $null
     )
 
     $jsonFileName = 'info.json'
     $jsonPath     = Join-Path $appFolder $jsonFileName
 
-    Write-Log "Export-WingetShowToJson: wingetId='$wingetId' -> $jsonPath" -Tag "Debug"
-    Write-Log "Fetching app info for $applicationName" -Tag "Get"
-
-    $architecturesToProbe = @('x86', 'x64', 'arm64')
-    $supportedArches = [System.Collections.ArrayList]::new()
-    $metadata = $null
-
-    foreach ($arch in $architecturesToProbe) {
-        $run = Invoke-WingetShowRaw -wingetId $wingetId -architecture $arch
-        if ($run.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($run.Output)) {
-            Write-Log "winget show -a $arch returned no output (exit: $($run.ExitCode))" -Tag "Debug"
-            continue
-        }
-        $normalized = ConvertFrom-WingetLocalizedOutput -RawOutput $run.Output
-        if ($null -eq $normalized) { continue }
-        if ($normalized -match 'No package found|No applicable package|No applicable installer') { continue }
-
-        $parsed = ConvertFrom-WingetShowOutput -normalizedOutput $normalized
-        $parsed.Obj['Id'] = $wingetId
-
-        if ($parsed.HasInstaller) {
-            [void]$supportedArches.Add($arch)
-            Write-Log "  $arch : has installer" -Tag "Debug"
-        } else {
-            Write-Log "  $arch : no installer" -Tag "Debug"
-        }
-        if (-not $metadata) { $metadata = $parsed.Obj }
+    $pkg = $precomputedPackageMetadata
+    if (-not $pkg) {
+        Write-Log "winget show: $wingetId" -Tag "Get"
+        $pkg = Get-WingetShowPackageMetadata -wingetId $wingetId
+    }
+    else {
+        Write-Log "Precomputed: $wingetId" -Tag "Debug"
     }
 
-    if ($supportedArches.Count -eq 0) {
-        Write-Log "winget: no installer for any architecture (x86, x64, arm64) for '$wingetId'" -Tag "Debug"
-        return
-    }
-    if (-not $metadata) {
-        Write-Log "winget: could not parse metadata for '$wingetId'" -Tag "Debug"
-        return
+    if (-not $pkg) {
+        Write-Log "No installer: $wingetId" -Tag "Debug"
+        return $false
     }
 
-    $obj = $metadata
-
+    $obj = $pkg.Metadata
+    $resolvedName = if ($obj['Name']) { [string]$obj['Name'] } else { '' }
+    if ([string]::IsNullOrWhiteSpace($resolvedName)) {
+        $resolvedName = $wingetId
+    }
     # Build simplified info.json for deploy.ps1: Name, Description, Publisher, InformationUrl (Homepage), PrivacyUrl, Architectures
     $infoOut = [ordered]@{ }
-    $infoOut['Name']         = $applicationName
+    $infoOut['Name']         = $resolvedName.Trim()
     $desc = $obj['Description']
     if ($desc -is [Array]) { $desc = ($desc -join "`n").Trim() }
     $infoOut['Description']  = if ($desc) { $desc } else { '' }
@@ -450,24 +577,167 @@ function Export-WingetShowToJson {
     $infoOut['PublisherUrl'] = if ($obj['PublisherUrl']) { $obj['PublisherUrl'] } else { $null }
     $infoOut['InformationUrl'] = if ($obj['PackageUrl']) { $obj['PackageUrl'] } elseif ($obj['Homepage']) { $obj['Homepage'] } else { $null }
     $infoOut['PrivacyUrl']   = if ($obj['PrivacyUrl']) { $obj['PrivacyUrl'] } else { $null }
-    $infoOut['Architectures'] = @($supportedArches.ToArray())
+    $infoOut['Architectures'] = @($pkg.SupportedArches)
     $infoOut['WingetId']     = $wingetId
     $infoOut['InstallContext'] = if ($installContext -match '^(system|user)$') { $installContext } else { 'system' }
     $infoOut['FetchedAt']    = (Get-Date -Format 'o')
 
-    $jsonContent = $infoOut | ConvertTo-Json -Depth 5 -Compress:$false
+    $deps = @($pkg.Dependencies | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Select-Object -Unique)
+    if ($deps.Count -gt 0) {
+        $infoOut['Dependencies'] = $deps
+    }
+    $other = $pkg.DependenciesOther
+    if ($other -and $other.Count -gt 0) {
+        $otherProps = @{ }
+        foreach ($ok in $other.Keys) {
+            $otherProps[$ok] = @($other[$ok])
+        }
+        $infoOut['DependenciesOther'] = [pscustomobject]$otherProps
+    }
+
+    $jsonContent = $infoOut | ConvertTo-Json -Depth 8 -Compress:$false
     try {
         Set-Content -LiteralPath $jsonPath -Value $jsonContent -Encoding UTF8
-        $shortPath = (Split-Path $appFolder -Leaf) + "\" + $jsonFileName
-        Write-Log "Saved winget metadata to $shortPath" -Tag "Info"
-    } catch {
-        Write-Log "Failed to write $jsonPath : $($_.Exception.Message)" -Tag "Error"
     }
+    catch {
+        Write-Log "Write failed: info.json — $($_.Exception.Message)" -Tag "Error"
+        return $false
+    }
+    return $true
 }
+
+function Get-CsvInstallSettingsForWingetId {
+    param(
+        [Parameter(Mandatory)] $csvRows,
+        [Parameter(Mandatory)] [string]$WingetId
+    )
+    $want = $WingetId.Trim()
+    foreach ($r in $csvRows) {
+        $id = if ($r.PSObject.Properties['WingetAppId']) { ([string]$r.WingetAppId).Trim() } else { '' }
+        if ($id -eq $want) {
+            $ctx = if ($r.PSObject.Properties['InstallContext']) {
+                $c = ([string]$r.InstallContext).Trim()
+                if ([string]::IsNullOrWhiteSpace($c)) { 'system' } else { $c }
+            }
+            else { 'system' }
+            if ($ctx -notmatch '^(system|user)$') { $ctx = 'system' }
+            $ov = if ($r.PSObject.Properties['InstallOverride']) { ([string]$r.InstallOverride).Trim() } else { '' }
+            return @{ InstallContext = $ctx; InstallOverride = $ov; Matched = $true }
+        }
+    }
+    return @{ InstallContext = 'system'; InstallOverride = ''; Matched = $false }
+}
+
+function Invoke-PackageSingleWingetApp {
+    <#
+    .SYNOPSIS
+        Writes info.json (optional), generates scripts from templates, builds .intunewin for one winget package folder.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$AppFolder,
+        [Parameter(Mandatory)] [string]$AppDisplayName,
+        [Parameter(Mandatory)] [string]$WingetId,
+        [Parameter(Mandatory)] [string]$InstallContext,
+        [string]$InstallOverride = '',
+        [Parameter(Mandatory)] [string]$TplInstall,
+        [Parameter(Mandatory)] [string]$TplUninstall,
+        [Parameter(Mandatory)] [string]$TplDetect,
+        [Parameter(Mandatory)] [string]$TempRoot,
+        [bool]$FetchWingetShow = $true,
+        $precomputedPackageMetadata = $null
+    )
+
+    $safeName = Get-SafeName $AppDisplayName
+    if (-not (Test-Path -LiteralPath $AppFolder)) {
+        New-Item -ItemType Directory -Path $AppFolder -Force | Out-Null
+        Write-Log "Folder: $AppFolder" -Tag "Debug"
+    }
+
+    if ($FetchWingetShow) {
+        $ok = Export-WingetShowToJson -wingetId $WingetId -appFolder $AppFolder -installContext $InstallContext -precomputedPackageMetadata $precomputedPackageMetadata
+        if (-not $ok) {
+            return $false
+        }
+    }
+    else {
+        $infoPath = Join-Path $AppFolder 'info.json'
+        if (-not (Test-Path -LiteralPath $infoPath)) {
+            Write-Log "Missing: info.json ($AppFolder)" -Tag "Error"
+            return $false
+        }
+        $info = Get-Content -LiteralPath $infoPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (-not $info.PSObject.Properties['InstallContext']) {
+            $info | Add-Member -NotePropertyName 'InstallContext' -NotePropertyValue $InstallContext -Force
+            $info | ConvertTo-Json -Depth 8 -Compress:$false | Set-Content -LiteralPath $infoPath -Encoding UTF8
+            Write-Log "Patched: InstallContext=$InstallContext" -Tag "Debug"
+        }
+    }
+
+    if ($script:keepPlainScripts) {
+        $scriptsDir = Join-Path $AppFolder 'scripts'
+        if (-not (Test-Path -LiteralPath $scriptsDir)) { New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null }
+        $genInstall   = Join-Path $scriptsDir 'install.ps1'
+        $genUninstall = Join-Path $scriptsDir 'uninstall.ps1'
+    }
+    else {
+        $genInstall   = Join-Path $AppFolder 'install.ps1'
+        $genUninstall = Join-Path $AppFolder 'uninstall.ps1'
+    }
+    $genDetect = Join-Path $AppFolder 'detection.ps1'
+
+    Set-Placeholders -templatePath $TplInstall   -outputPath $genInstall   -applicationName $AppDisplayName -wingetAppId $WingetId -installContext $InstallContext -installOverride $InstallOverride
+    Set-Placeholders -templatePath $TplUninstall -outputPath $genUninstall -applicationName $AppDisplayName -wingetAppId $WingetId -installContext $InstallContext
+    Set-Placeholders -templatePath $TplDetect    -outputPath $genDetect    -applicationName $AppDisplayName -wingetAppId $WingetId -installContext $InstallContext
+
+    $packTemp = Join-Path $TempRoot ([guid]::NewGuid().ToString('N'))
+    if (-not (Test-Path -LiteralPath $TempRoot)) { New-Item -ItemType Directory -Path $TempRoot -Force | Out-Null }
+    $targetIntuneWin = Join-Path $AppFolder ("{0}.intunewin" -f $safeName)
+    try {
+        New-Item -ItemType Directory -Path $packTemp -Force | Out-Null
+        Copy-Item -LiteralPath $genInstall -Destination (Join-Path $packTemp 'install.ps1') -Force
+        Copy-Item -LiteralPath $genUninstall -Destination (Join-Path $packTemp 'uninstall.ps1') -Force
+        try {
+            Write-Log "IntuneWinAppUtil: $safeName" -Tag "Run"
+            New-IntuneWinPackage -sourceFolder $packTemp -setupFile 'install.ps1' -outputFolder $packTemp
+        }
+        catch {
+            Write-Log "Failed: $AppDisplayName — $($_.Exception.Message)" -Tag "Error"
+            return $false
+        }
+        $defaultIntuneWin = Join-Path $packTemp 'install.intunewin'
+        if (Test-Path -LiteralPath $defaultIntuneWin) {
+            if (Test-Path -LiteralPath $targetIntuneWin) { Remove-Item -LiteralPath $targetIntuneWin -Force -ErrorAction SilentlyContinue }
+            Move-Item -LiteralPath $defaultIntuneWin -Destination $targetIntuneWin -Force
+        }
+        else {
+            Write-Log "Missing: install.intunewin" -Tag "Error"
+            return $false
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $packTemp) {
+            Remove-Item -LiteralPath $packTemp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if (-not $script:keepPlainScripts) {
+        foreach ($filePath in @($genInstall, $genUninstall)) {
+            try {
+                Remove-Item -LiteralPath $filePath -Force -ErrorAction Stop
+            }
+            catch {
+                Write-Log "Cleanup failed: $($_.Exception.Message)" -Tag "Debug"
+            }
+        }
+    }
+    return $true
+}
+
 #endregion
 
 #region --- Validate inputs & setup ---
-Write-Log "Validating required paths..." -Tag "Debug"
+Install-IntuneWinAppUtil -DestinationPath $intuneWinAppUtilPath
 Assert-Path -path $intuneWinAppUtilPath -description 'IntuneWinAppUtil.exe'
 Assert-Path -path $csvPath -description 'CSV'
 
@@ -475,158 +745,188 @@ $tplInstall   = Join-Path $templatesPath 'install.ps1'
 $tplUninstall = Join-Path $templatesPath 'uninstall.ps1'
 $tplDetect    = Join-Path $templatesPath 'detection.ps1'
 
-Write-Log "Template paths: install='$tplInstall' | uninstall='$tplUninstall' | detect='$tplDetect'" -Tag "Debug"
+Write-Log "Templates: install | uninstall | detect" -Tag "Debug"
 Assert-Path -path $tplInstall   -description 'install.ps1 template'
 Assert-Path -path $tplUninstall -description 'uninstall.ps1 template'
 Assert-Path -path $tplDetect    -description 'detection.ps1 template'
 
 if (-not (Test-Path $outputRoot)) {
-    Write-Log "Creating output root directory: $outputRoot" -Tag "Debug"
     New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
+    Write-Log "outputRoot: $outputRoot (created)" -Tag "Debug"
 } else {
-    Write-Log "Output root already exists: $outputRoot" -Tag "Debug"
+    Write-Log "outputRoot: $outputRoot" -Tag "Debug"
 }
 #endregion
 
 #region --- Load CSV ---
-Write-Log "Loading CSV from: $csvPath" -Tag "Get"
+Write-Log "CSV: $csvPath" -Tag "Get"
 try {
     $rows = Import-Csv -LiteralPath $csvPath -Delimiter ','
-    Write-Log "CSV loaded: $($rows.Count) row(s)" -Tag "Debug"
+    Write-Log "Rows: $($rows.Count)" -Tag "Debug"
 } catch {
-    Write-Log "Failed to read CSV: $($_.Exception.Message)" -Tag "Error"
+    Write-Log "CSV read failed: $($_.Exception.Message)" -Tag "Error"
     Complete-Script -ExitCode 1
 }
 if (-not $rows -or $rows.Count -eq 0) {
-    Write-Log 'CSV contains no rows.' -Tag 'Error'
+    Write-Log 'CSV: empty' -Tag 'Error'
     Complete-Script -ExitCode 1
 }
-Write-Log "Processing $($rows.Count) app(s) from CSV" -Tag "Info"
+Write-Log "Apps: $($rows.Count)" -Tag "Info"
 #endregion
 
 #region --- Main ---
+$tempRoot = Join-Path $outputRoot 'temp'
 $rowIndex = 0
 foreach ($row in $rows) {
     $rowIndex++
-    $appName   = ([string]$row.ApplicationName).Trim()
-    $wingetId  = ([string]$row.WingetAppId).Trim()
+    $wingetId = if ($row.PSObject.Properties['WingetAppId']) { ([string]$row.WingetAppId).Trim() } else { '' }
     $installContext = if ($row.PSObject.Properties['InstallContext']) {
         $ctx = ([string]$row.InstallContext).Trim()
         if ([string]::IsNullOrWhiteSpace($ctx)) { 'system' } else { $ctx }
-    } else { 'system' }
+    }
+    else { 'system' }
     $installOverride = if ($row.PSObject.Properties['InstallOverride']) {
         ([string]$row.InstallOverride).Trim()
-    } else { '' }
+    }
+    else { '' }
     if ($installContext -notmatch '^(system|user)$') { $installContext = 'system' }
 
-    Write-Log "Row $rowIndex : appName='$appName' | wingetId='$wingetId' | installContext='$installContext'" -Tag "Debug"
-
-    if ([string]::IsNullOrWhiteSpace($appName) -or [string]::IsNullOrWhiteSpace($wingetId)) {
-        Write-Log 'Skipping row with missing ApplicationName or WingetAppId.' -Tag 'Error'
+    if ([string]::IsNullOrWhiteSpace($wingetId)) {
+        Write-Log 'Skipped: missing AppId or Name' -Tag 'Error'
         continue
     }
 
-    $safeName   = Get-SafeName $appName
-    $appFolder  = Join-Path $outputRoot $safeName
+    $precomputedMain = $null
+    if ($fetchWingetShow) {
+        $precomputedMain = Get-WingetShowPackageMetadata -wingetId $wingetId
+        if (-not $precomputedMain) {
+            Write-Log "No installer: $wingetId" -Tag 'Error'
+            continue
+        }
+        $appName = [string]$precomputedMain.Metadata['Name']
+        if ([string]::IsNullOrWhiteSpace($appName)) { $appName = $wingetId }
+        $appName = $appName.Trim()
+        $safeName = Get-SafeName $appName
+        $appFolder = Join-Path $outputRoot $safeName
+    }
+    else {
+        $resolved = Get-AppOutputFolderByWingetId -OutputRoot $outputRoot -WingetId $wingetId
+        if (-not $resolved) {
+            Write-Log "Not packaged: $wingetId" -Tag 'Error'
+            continue
+        }
+        $appFolder = $resolved.Folder
+        $safeName = Split-Path -Leaf $appFolder
+        $appName = if ($resolved.Info.Name) { ([string]$resolved.Info.Name).Trim() } else { '' }
+        if ([string]::IsNullOrWhiteSpace($appName)) {
+            Write-Log "Skipped: no Name in info.json ($safeName)" -Tag 'Error'
+            continue
+        }
+        $infoPathProbe = Join-Path $appFolder 'info.json'
+        if (-not (Test-Path -LiteralPath $infoPathProbe)) {
+            Write-Log "Missing: info.json ($safeName)" -Tag 'Error'
+            continue
+        }
+    }
 
-    Write-Log "Processing: $appName ($wingetId)" -Tag "Info"
-    Write-Log "Ensuring app folder exists: $appFolder" -Tag "Debug"
+    Write-Log "Row $($rowIndex): $appName ($wingetId)" -Tag "Debug"
+    Write-Log "$appName ($wingetId)" -Tag "Info"
 
-    if ($forceRepack -and (Test-Path $appFolder)) {
-        Write-Log "Force repack: clearing app folder $safeName" -Tag "Info"
+    if ($forceRepack -and (Test-Path -LiteralPath $appFolder)) {
+        Write-Log "Force repack: $safeName" -Tag "Info"
         Get-ChildItem -LiteralPath $appFolder -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    if (-not (Test-Path $appFolder)) {
+    if (-not (Test-Path -LiteralPath $appFolder)) {
         New-Item -ItemType Directory -Path $appFolder -Force | Out-Null
-        Write-Log "Created app folder: $appFolder" -Tag "Debug"
     }
 
     $targetIntuneWin = Join-Path $appFolder ("{0}.intunewin" -f $safeName)
-    if (-not $forceRepack -and (Test-Path $targetIntuneWin)) {
-        Write-Log "Skipped (already packed): $safeName" -Tag "Info"
+    if (-not $forceRepack -and (Test-Path -LiteralPath $targetIntuneWin)) {
+        Write-Log "Skipped: $safeName" -Tag "Info"
         continue
     }
 
-    if ($fetchWingetShow) {
-        Export-WingetShowToJson -wingetId $wingetId -appFolder $appFolder -applicationName $appName -installContext $installContext
-    } else {
-        $infoPath = Join-Path $appFolder 'info.json'
-        if (Test-Path -LiteralPath $infoPath) {
-            $info = Get-Content -LiteralPath $infoPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            if (-not $info.PSObject.Properties['InstallContext']) {
-                $info | Add-Member -NotePropertyName 'InstallContext' -NotePropertyValue $installContext -Force
-                $info | ConvertTo-Json -Depth 5 -Compress:$false | Set-Content -LiteralPath $infoPath -Encoding UTF8
-                Write-Log "Patched info.json with InstallContext=$installContext" -Tag "Debug"
-            }
-        }
+    $packOk = Invoke-PackageSingleWingetApp -AppFolder $appFolder -AppDisplayName $appName -WingetId $wingetId `
+        -InstallContext $installContext -InstallOverride $installOverride `
+        -TplInstall $tplInstall -TplUninstall $tplUninstall -TplDetect $tplDetect `
+        -TempRoot $tempRoot `
+        -FetchWingetShow:$fetchWingetShow -precomputedPackageMetadata $precomputedMain
+
+    if (-not $packOk) {
+        Write-Log "Failed: row $rowIndex ($wingetId)" -Tag 'Error'
+        continue
     }
 
-    # When keepPlainScripts: put install/uninstall under apps\$appName\scripts\; detection.ps1 stays in app root.
-    if ($keepPlainScripts) {
-        $scriptsDir = Join-Path $appFolder 'scripts'
-        if (-not (Test-Path $scriptsDir)) { New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null }
-        $genInstall   = Join-Path $scriptsDir 'install.ps1'
-        $genUninstall = Join-Path $scriptsDir 'uninstall.ps1'
-    } else {
-        $genInstall   = Join-Path $appFolder 'install.ps1'
-        $genUninstall = Join-Path $appFolder 'uninstall.ps1'
-    }
-    $genDetect = Join-Path $appFolder 'detection.ps1'
+    Write-Log "Packaged: $appName" -Tag 'Success'
 
-    Write-Log "Generated script paths: install=$genInstall | uninstall=$genUninstall | detect=$genDetect" -Tag "Debug"
-
-    Set-Placeholders -templatePath $tplInstall   -outputPath $genInstall   -applicationName $appName -wingetAppId $wingetId -installContext $installContext -installOverride $installOverride
-    Set-Placeholders -templatePath $tplUninstall -outputPath $genUninstall -applicationName $appName -wingetAppId $wingetId -installContext $installContext
-    Set-Placeholders -templatePath $tplDetect    -outputPath $genDetect    -applicationName $appName -wingetAppId $wingetId -installContext $installContext
-
-    # Package only install.ps1 and uninstall.ps1 in apps\temp; then move .intunewin to app folder and delete temp.
-    $tempRoot   = Join-Path $outputRoot 'temp'
-    $packTemp   = Join-Path $tempRoot ([guid]::NewGuid().ToString('N'))
-    if (-not (Test-Path $tempRoot)) { New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null }
+    $infoPathMain = Join-Path $appFolder 'info.json'
+    if (-not (Test-Path -LiteralPath $infoPathMain)) { continue }
     try {
-        New-Item -ItemType Directory -Path $packTemp -Force | Out-Null
-        Copy-Item -LiteralPath $genInstall -Destination (Join-Path $packTemp 'install.ps1') -Force
-        Copy-Item -LiteralPath $genUninstall -Destination (Join-Path $packTemp 'uninstall.ps1') -Force
-        Write-Log "Starting Intune package build for: $safeName (pack in temp, install.ps1 + uninstall.ps1 only)" -Tag "Debug"
-        try {
-            New-IntuneWinPackage -sourceFolder $packTemp -setupFile "install.ps1" -outputFolder $packTemp
-        } catch {
-            Write-Log "Packaging error for $($appName): $($_.Exception.Message)" -Tag "Error"
+        $infoMain = Get-Content -LiteralPath $infoPathMain -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        Write-Log "info.json read failed: $($_.Exception.Message)" -Tag 'Debug'
+        continue
+    }
+    $depList = @()
+    if ($infoMain.PSObject.Properties['Dependencies'] -and $infoMain.Dependencies) {
+        $depList = @($infoMain.Dependencies | ForEach-Object { $_.ToString().Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    }
+    if ($depList.Count -eq 0) { continue }
+
+    $depsRoot = Join-Path $appFolder 'dependencies'
+    if (-not (Test-Path -LiteralPath $depsRoot)) {
+        New-Item -ItemType Directory -Path $depsRoot -Force | Out-Null
+        Write-Log "deps/: $safeName" -Tag "Debug"
+    }
+
+    $depTotal = $depList.Count
+    $depIdx = 0
+    foreach ($depWingetId in $depList) {
+        $depIdx++
+        Write-Log "Dep $depIdx/${depTotal}: $depWingetId ($appName)" -Tag "Info"
+        $depMeta = Get-WingetShowPackageMetadata -wingetId $depWingetId
+        if (-not $depMeta) {
+            Write-Log "Dep skipped: $depWingetId (no metadata)" -Tag 'Error'
             continue
         }
-        $defaultIntuneWin = Join-Path $packTemp 'install.intunewin'
-        if (Test-Path $defaultIntuneWin) {
-            if (Test-Path $targetIntuneWin) { Remove-Item -LiteralPath $targetIntuneWin -Force -ErrorAction SilentlyContinue }
-            Move-Item -LiteralPath $defaultIntuneWin -Destination $targetIntuneWin -Force
-            Write-Log "Moved .intunewin to app folder; removing temp" -Tag "Debug"
-        } else {
-            Write-Log "Expected file not found after packaging: $defaultIntuneWin" -Tag "Debug"
-        }
-    }
-    finally {
-        if (Test-Path $packTemp) {
-            Remove-Item -LiteralPath $packTemp -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    }
+        $depDisplayName = [string]$depMeta.Metadata['Name']
+        if ([string]::IsNullOrWhiteSpace($depDisplayName)) { $depDisplayName = $depWingetId }
+        $depDisplayName = $depDisplayName.Trim()
+        $depSafe = Get-SafeName $depDisplayName
+        $depFolder = Join-Path $depsRoot $depSafe
 
-    if (-not $keepPlainScripts) {
-        Write-Log "Cleanup: removing plain scripts (keepPlainScripts=$keepPlainScripts)" -Tag "Debug"
-        foreach ($filePath in @($genInstall, $genUninstall)) {
-            try {
-                Remove-Item -LiteralPath $filePath -Force -ErrorAction Stop
-                Write-Log "Removed: $filePath" -Tag "Debug"
-            } catch {
-                Write-Log "Cleanup failed for $($filePath): $($_.Exception.Message)" -Tag "Debug"
-            }
+        $csvDep = Get-CsvInstallSettingsForWingetId -csvRows $rows -WingetId $depWingetId
+        $depCtx = $csvDep.InstallContext
+        $depOv = $csvDep.InstallOverride
+        if ($csvDep.Matched) {
+            Write-Log "Dep CSV: $depWingetId | ctx=$depCtx" -Tag "Debug"
         }
-    } else {
-        Write-Log "Keeping plain scripts (keepPlainScripts=$keepPlainScripts)" -Tag "Debug"
-    }
 
-    Write-Log "Packaged: $safeName" -Tag 'Success'
+        if ($forceRepack -and (Test-Path -LiteralPath $depFolder)) {
+            Write-Log "Force repack: dep $depSafe" -Tag "Info"
+            Remove-Item -LiteralPath $depFolder -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        $depTargetWin = Join-Path $depFolder ("{0}.intunewin" -f $depSafe)
+        if (-not $forceRepack -and (Test-Path -LiteralPath $depTargetWin)) {
+            Write-Log "Skipped: dep $depSafe" -Tag "Info"
+            continue
+        }
+
+        $depPackOk = Invoke-PackageSingleWingetApp -AppFolder $depFolder -AppDisplayName $depDisplayName -WingetId $depWingetId `
+            -InstallContext $depCtx -InstallOverride $depOv `
+            -TplInstall $tplInstall -TplUninstall $tplUninstall -TplDetect $tplDetect `
+            -TempRoot $tempRoot `
+            -FetchWingetShow:$true -precomputedPackageMetadata $depMeta
+        if ($depPackOk) {
+            Write-Log "Packaged dep: $depDisplayName" -Tag 'Success'
+        }
+        else {
+            Write-Log "Failed dep: $depWingetId" -Tag 'Error'
+        }
+    }
 }
 #endregion
 
-Write-Log "All apps processed. Exiting successfully." -Tag "Debug"
 Complete-Script -ExitCode 0

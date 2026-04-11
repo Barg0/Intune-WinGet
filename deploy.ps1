@@ -13,6 +13,7 @@ $ErrorActionPreference = 'Stop'
 
 $enableGroupCreation   = $true
 $groupNamingAppSuffix  = $true
+$deployDependencies    = $true  # If $false, skip dependency auto-deploy entirely
 $groupCreationBlacklist = @('Microsoft Visual C++*', 
                             'Microsoft ODBC Driver*',
                             'Microsoft .NET Runtime*',
@@ -32,6 +33,12 @@ $uninstallCommandLineUser   = "powershell.exe -ExecutionPolicy Bypass -NoProfile
 $chunkSizeBytes        = 1024l * 1024l * 6l
 $sasRenewAfterMs       = 420000
 $sleepAfterCommitSec   = 30
+# POST .../contentVersions often returns 412 until a prior publish finishes (especially overwrite).
+$contentVersionPostAttempts = 10
+$contentVersionPostDelaySec = 15
+# Azure blob PUT can fail with DNS / "unknown host" (transient); retry before failing the deploy.
+$blobHttpRetryMax         = 6
+$blobHttpRetryDelaySec    = 5
 
 # ---------------------------[ Logging Setup ]---------------------------
 $log           = $true
@@ -97,7 +104,7 @@ function Write-Log {
     }
 
     Write-Host "$timestamp " -NoNewline
-    Write-Host "[  " -NoNewline -ForegroundColor White
+    Write-Host "[ " -NoNewline -ForegroundColor White
     Write-Host "$rawTag" -NoNewline -ForegroundColor $color
     Write-Host " ] " -NoNewline -ForegroundColor White
     Write-Host "$Message"
@@ -110,9 +117,9 @@ function Complete-Script {
     $scriptEndTime = Get-Date
     $duration      = $scriptEndTime - $scriptStartTime
 
-    Write-Log "Script execution time: $($duration.ToString('hh\:mm\:ss\.ff'))" -Tag "Info"
-    Write-Log "Exit Code: $ExitCode" -Tag "Info"
-    Write-Log "======== Script Completed ========" -Tag "End"
+    Write-Log "Runtime $($duration.ToString('hh\:mm\:ss\.ff'))" -Tag "Info"
+    Write-Log "Exit $ExitCode" -Tag "Info"
+    Write-Log "==================== End ====================" -Tag "End"
 
     exit $ExitCode
 }
@@ -124,17 +131,44 @@ $iconsRoot = Join-Path $rootDir 'icons'
 $csvPath   = Join-Path $rootDir 'apps.csv'
 
 # ---------------------------[ Auth ]---------------------------
-function Test-GraphModulesInstalled {
-    $authModule   = Get-Module -ListAvailable 'Microsoft.Graph.Authentication' -ErrorAction SilentlyContinue | Select-Object -First 1
-    $graphModule  = Get-Module -ListAvailable 'Microsoft.Graph' -ErrorAction SilentlyContinue | Select-Object -First 1
-    $graphBeta    = Get-Module -ListAvailable 'Microsoft.Graph.Beta' -ErrorAction SilentlyContinue | Select-Object -First 1
-    $missing = @()
-    if (-not $authModule -and -not $graphModule) { $missing += 'Microsoft.Graph' }
-    if (-not $graphBeta) { $missing += 'Microsoft.Graph.Beta' }
-    if ($missing.Count -gt 0) {
-        throw "Missing Graph module(s): $($missing -join ', '). Install with: Install-Module -Name Microsoft.Graph,Microsoft.Graph.Beta -Scope CurrentUser"
-    }
+function Test-GraphSdkModulesPresent {
+    $authModule  = Get-Module -ListAvailable 'Microsoft.Graph.Authentication' -ErrorAction SilentlyContinue | Select-Object -First 1
+    $graphModule = Get-Module -ListAvailable 'Microsoft.Graph' -ErrorAction SilentlyContinue | Select-Object -First 1
+    $graphBeta   = Get-Module -ListAvailable 'Microsoft.Graph.Beta' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ((-not $authModule -and -not $graphModule) -or -not $graphBeta) { return $false }
     return $true
+}
+
+function Install-GraphSdkModules {
+    if (Test-GraphSdkModulesPresent) { return }
+    Write-Log "Graph: Install-Module" -Tag "Run"
+    try {
+        if ($PSVersionTable.PSVersion.Major -lt 6) {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        }
+        $installParams = @{
+            Name            = @('Microsoft.Graph', 'Microsoft.Graph.Beta')
+            Scope           = 'CurrentUser'
+            Force           = $true
+            AllowClobber    = $true
+            Repository      = 'PSGallery'
+            ErrorAction     = 'Stop'
+        }
+        $icm = Get-Command Install-Module -ErrorAction Stop
+        if ($icm.Parameters.ContainsKey('AcceptLicense')) {
+            $installParams.AcceptLicense = $true
+        }
+        Install-Module @installParams
+    }
+    catch {
+        Write-Log "Graph: Install-Module failed — $($_.Exception.Message)" -Tag "Error"
+        throw "Install Graph modules manually: Install-Module -Name Microsoft.Graph,Microsoft.Graph.Beta -Scope CurrentUser"
+    }
+    if (-not (Test-GraphSdkModulesPresent)) {
+        Write-Log "Graph: modules still missing after Install-Module" -Tag "Error"
+        throw "Microsoft.Graph / Microsoft.Graph.Beta not available after install."
+    }
+    Write-Log "Graph: modules ok" -Tag "Success"
 }
 
 function Test-GraphScopes {
@@ -150,7 +184,7 @@ function Test-GraphScopes {
     }
     foreach ($required in $graphScopes) {
         if ($currentScopes -notcontains $required) {
-            Write-Log "Scope missing: $required (re-auth required)" -Tag "Debug"
+            Write-Log "Scope missing: $required" -Tag "Debug"
             return $false
         }
     }
@@ -158,31 +192,29 @@ function Test-GraphScopes {
 }
 
 function Initialize-GraphConnection {
-    Test-GraphModulesInstalled | Out-Null
+    Install-GraphSdkModules
     if (-not (Get-Module 'Microsoft.Graph.Authentication' -ErrorAction SilentlyContinue)) {
         Import-Module 'Microsoft.Graph.Authentication' -ErrorAction Stop
-        Write-Log "Loaded Microsoft.Graph.Authentication" -Tag "Debug"
+        Write-Log "Module: Graph.Authentication" -Tag "Debug"
     }
     $graphContext = $null
     try {
         $graphContext = Get-MgContext -ErrorAction Stop
     } catch {
-        Write-Log "No existing Graph context." -Tag "Debug"
+        Write-Log "No Graph context" -Tag "Debug"
     }
     if ($graphContext -and $graphContext.Account -and (Test-GraphScopes -graphContext $graphContext)) {
-        $tenantInfo = if ($graphContext.TenantId) { " | TenantId: $($graphContext.TenantId)" } else { '' }
-        Write-Log "Graph already connected: $($graphContext.Account)$tenantInfo" -Tag "Success"
+        Write-Log "Graph: $($graphContext.Account)" -Tag "Success"
         return
     }
     if ($graphContext -and -not (Test-GraphScopes -graphContext $graphContext)) {
-        Write-Log "Re-authenticating to grant required scopes..." -Tag "Run"
+        Write-Log "Graph: re-auth (missing scopes)" -Tag "Run"
         Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
     }
-    Write-Log "Connecting to Graph..." -Tag "Run"
+    Write-Log "Graph: connecting" -Tag "Run"
     Connect-MgGraph -Scopes $graphScopes -NoWelcome -ErrorAction Stop
     $graphContext = Get-MgContext -ErrorAction SilentlyContinue
-    $tenantInfo = if ($graphContext -and $graphContext.TenantId) { " | TenantId: $($graphContext.TenantId)" } else { '' }
-    Write-Log "Connected: $($graphContext.Account)$tenantInfo" -Tag "Success"
+    Write-Log "Graph: $($graphContext.Account)" -Tag "Success"
 }
 
 # ---------------------------[ Graph Request ]---------------------------
@@ -255,7 +287,7 @@ function Get-IntuneWinMetadata {
 # ---------------------------[ Detection rule from detection.ps1 ]---------------------------
 function Get-DetectionRuleFromScript {
     param([Parameter(Mandatory)][string]$scriptPath)
-    if (-not (Test-Path -LiteralPath $scriptPath)) { throw "detection.ps1 not found: $scriptPath" }
+    if (-not (Test-Path -LiteralPath $scriptPath)) { throw "Missing: detection.ps1" }
     $scriptBytes = [System.IO.File]::ReadAllBytes($scriptPath)
     $scriptBase64 = [System.Convert]::ToBase64String($scriptBytes)
     return @{
@@ -275,9 +307,74 @@ function Get-SafeName {
     return ($name -replace $regex, '_').Trim()
 }
 
+function Get-AppFolderPathForWingetId {
+    param(
+        [Parameter(Mandatory)] [string]$AppsRoot,
+        [Parameter(Mandatory)] [string]$WingetId
+    )
+    if (-not (Test-Path -LiteralPath $AppsRoot)) { return $null }
+    $want = $WingetId.Trim()
+    foreach ($d in Get-ChildItem -LiteralPath $AppsRoot -Directory -ErrorAction SilentlyContinue) {
+        if ($d.Name -eq 'temp') { continue }
+        $jsonPath = Join-Path $d.FullName 'info.json'
+        if (-not (Test-Path -LiteralPath $jsonPath)) { continue }
+        try {
+            $info = Get-Content -LiteralPath $jsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $wid = if ($info.WingetId) { [string]$info.WingetId } else { '' }
+            if ($wid.Trim() -eq $want) {
+                return $d.FullName
+            }
+        }
+        catch {
+            Write-Log "Read failed: $jsonPath — $($_.Exception.Message)" -Tag "Debug"
+        }
+    }
+    return $null
+}
+
+function Add-MobileAppDependencyRelationships {
+    param(
+        [Parameter(Mandatory)] [string]$MainAppId,
+        [Parameter(Mandatory)] [string[]]$TargetAppIds
+    )
+    $MainAppId = $MainAppId.Trim()
+    $ids = @($TargetAppIds | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Select-Object -Unique)
+    if ($ids.Count -eq 0) { return }
+    Write-Log "Dependencies: $($ids.Count) → $MainAppId" -Tag "Info"
+    # AppLifecycle: POST .../mobileApps/{id}/relationships is not routed ("No OData route exists").
+    # Use updateRelationships (see https://learn.microsoft.com/en-us/graph/api/intune-shared-mobileapp-updaterelationships):
+    # one POST replaces the app's direct relationship set — include all dependencies in one relationships[] array.
+    $relationships = [System.Collections.ArrayList]::new()
+    try {
+        $relsResponse = Invoke-GraphApi -method Get -resource "/deviceAppManagement/mobileApps/$MainAppId/relationships"
+        $relList = if ($null -ne $relsResponse.value) { @($relsResponse.value) } else { @($relsResponse) }
+        foreach ($r in $relList) {
+            if ([string]$r.'@odata.type' -eq '#microsoft.graph.mobileAppSupersedence') {
+                [void]$relationships.Add($r)
+            }
+        }
+    }
+    catch {
+        Write-Log "Dependencies: GET relationships failed (supersedence merge skipped) — $_" -Tag "Debug"
+    }
+    foreach ($tid in $ids) {
+        [void]$relationships.Add(@{
+                '@odata.type'    = '#microsoft.graph.mobileAppDependency'
+                targetId         = $tid
+                dependencyType   = 'autoInstall'
+            })
+    }
+    $body = @{ relationships = @($relationships.ToArray()) }
+    $null = Invoke-GraphApi -method Post -resource "/deviceAppManagement/mobileApps/$MainAppId/updateRelationships" -body $body
+    foreach ($tid in $ids) {
+        Write-Log "Dep: $tid" -Tag "Debug"
+    }
+    Write-Log "Dependencies: ok ($MainAppId)" -Tag "Success"
+}
+
 # ---------------------------[ Icon base64 ]---------------------------
 # Tries each candidate in order: exact match (Name.png), then prefix match (longest base name wins).
-# Candidates should include CSV ApplicationName, WinGet catalog name (displayName), and package folder safe name — they often differ.
+# Candidates should include WinGet catalog name (displayName), WingetId, and package folder safe name — they often differ.
 function Get-IconBase64 {
     param(
         [Parameter(Mandatory)][string[]]$CandidateAppNames,
@@ -301,7 +398,7 @@ function Get-IconBase64 {
     foreach ($appName in $orderedUnique) {
         $exactMatch = $allIcons | Where-Object { $_.BaseName -eq $appName } | Select-Object -First 1
         if ($exactMatch) {
-            Write-Log "Icon: $($exactMatch.Name) (exact match for '$appName')" -Tag "Get"
+            Write-Log "Icon: $($exactMatch.Name)" -Tag "Get"
             return [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($exactMatch.FullName))
         }
     }
@@ -309,7 +406,7 @@ function Get-IconBase64 {
         $prefixMatches = $allIcons | Where-Object { $appName.StartsWith($_.BaseName, [StringComparison]::OrdinalIgnoreCase) }
         if (-not $prefixMatches) { continue }
         $iconFile = $prefixMatches | Sort-Object { $_.BaseName.Length } -Descending | Select-Object -First 1
-        Write-Log "Icon: $($iconFile.Name) (prefix match for '$appName')" -Tag "Get"
+        Write-Log "Icon: $($iconFile.Name)" -Tag "Get"
         return [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($iconFile.FullName))
     }
     return $null
@@ -426,7 +523,7 @@ function Get-OrCreateGroup {
     $filter = [uri]::EscapeDataString("displayName eq '$escaped'")
     $existing = Invoke-GraphApi -method Get -resource "/groups?`$filter=$filter&`$top=1&`$select=id,displayName"
     if ($existing.value -and $existing.value.Count -gt 0) {
-        Write-Log "Group exists: $displayName" -Tag "Get"
+        Write-Log "Group: exists ($displayName)" -Tag "Get"
         return $existing.value[0].id
     }
     $mailNick = (Get-SafeMailNickname -displayName $displayName) + [guid]::NewGuid().ToString('N').Substring(0, 8)
@@ -438,9 +535,9 @@ function Get-OrCreateGroup {
         securityEnabled = $true
         groupTypes      = @()
     }
-    Write-Log "Creating group: $displayName" -Tag "Run"
+    Write-Log "Group: $displayName" -Tag "Run"
     $created = Invoke-GraphApi -method Post -resource '/groups' -body $groupBody
-    Write-Log "Created group: $displayName (id: $($created.id))" -Tag "Debug"
+    Write-Log "Group id: $($created.id)" -Tag "Debug"
     return $created.id
 }
 
@@ -473,9 +570,9 @@ function Set-AppGroupAssignments {
         }
     )
     $assignBody = @{ mobileAppAssignments = $assignments }
-    Invoke-GraphApi -method Post -resource "/deviceAppManagement/mobileApps/$appId/assign" -body $assignBody
-    Write-Log "Assigned app to groups: RQ=$($groupNames.RQ), AV=$($groupNames.AV)" -Tag "Debug"
-    Write-Log "Assigned groups to app" -Tag "Success"
+    $null = Invoke-GraphApi -method Post -resource "/deviceAppManagement/mobileApps/$appId/assign" -body $assignBody
+    Write-Log "Assign: RQ=$($groupNames.RQ); AV=$($groupNames.AV)" -Tag "Debug"
+    Write-Log "Groups assigned" -Tag "Success"
 }
 
 # ---------------------------[ Check if app exists ]---------------------------
@@ -501,6 +598,32 @@ function Get-ExistingAppId {
 }
 
 # ---------------------------[ Chunked Azure upload ]---------------------------
+function Invoke-RestMethodWithRetry {
+    param(
+        [Parameter(Mandatory)] [string]$Uri,
+        [Parameter(Mandatory)] [ValidateSet('Put')][string]$Method,
+        [hashtable]$Headers = @{},
+        $Body = $null,
+        [string]$ContentType = $null,
+        [int]$MaxAttempts = $blobHttpRetryMax,
+        [int]$DelaySec = $blobHttpRetryDelaySec
+    )
+    for ($a = 1; $a -le $MaxAttempts; $a++) {
+        try {
+            $p = @{ Uri = $Uri; Method = $Method; UseBasicParsing = $true }
+            if ($Headers.Count -gt 0) { $p.Headers = $Headers }
+            if ($null -ne $Body) { $p.Body = $Body }
+            if ($ContentType) { $p.ContentType = $ContentType }
+            return Invoke-RestMethod @p
+        }
+        catch {
+            if ($a -ge $MaxAttempts) { throw }
+            Write-Log "Blob: retry $a/$MaxAttempts ($($_.Exception.Message))" -Tag "Get"
+            Start-Sleep -Seconds $DelaySec
+        }
+    }
+}
+
 function Send-ChunkedUpload {
     param([string]$sasUri, [string]$filePath, [string]$fileUri = $null)
     $fileSizeBytes = (Get-Item -LiteralPath $filePath).Length
@@ -517,7 +640,8 @@ function Send-ChunkedUpload {
             $chunkBuffer = New-Object byte[] $chunkLength
             $null = $fileReader.Read($chunkBuffer, 0, $chunkLength)
             $blockUri = "$currentSasUri&comp=block&blockid=$blockId"
-            Invoke-RestMethod -Uri $blockUri -Method Put -Headers @{ 'x-ms-blob-type' = 'BlockBlob' } -Body $chunkBuffer -ContentType 'application/octet-stream' -UseBasicParsing
+            $null = Invoke-RestMethodWithRetry -Uri $blockUri -Method Put -Headers @{ 'x-ms-blob-type' = 'BlockBlob' } -Body $chunkBuffer -ContentType 'application/octet-stream'
+            Write-Log "Chunk: $($chunkIndex + 1)/$chunkCount" -Tag "Debug"
             if ($fileUri -and $chunkIndex -lt ($chunkCount - 1) -and $renewTimer.ElapsedMilliseconds -ge $sasRenewAfterMs) {
                 $null = Invoke-GraphApi -method Post -resource "$fileUri/renewUpload" -body '{}'
                 $fileResource = Invoke-GraphApi -method Get -resource $fileUri
@@ -527,13 +651,14 @@ function Send-ChunkedUpload {
                 }
                 $currentSasUri = $fileResource.azureStorageUri
                 $renewTimer.Restart()
+                Write-Log "SAS: renewed" -Tag "Debug"
             }
         }
         $blockListUri = "$currentSasUri&comp=blocklist"
         $blockListXml = '<?xml version="1.0" encoding="utf-8"?><BlockList>'
         foreach ($id in $blockIds) { $blockListXml += "<Latest>$id</Latest>" }
         $blockListXml += '</BlockList>'
-        Invoke-RestMethod -Uri $blockListUri -Method Put -Body $blockListXml -ContentType 'application/xml' -UseBasicParsing
+        $null = Invoke-RestMethodWithRetry -Uri $blockListUri -Method Put -Body $blockListXml -ContentType 'application/xml'
     } finally { $fileReader.Dispose() }
 }
 
@@ -541,16 +666,16 @@ function Send-ChunkedUpload {
 function Invoke-Win32AppDeployment {
     param(
         [string]$appFolderPath,
-        [string]$appName,
-        [string]$csvApplicationName
+        [string]$folderSafeName,
+        [switch]$SkipGroupAssignment
     )
     $infoPath = Join-Path $appFolderPath 'info.json'
     if (-not (Test-Path -LiteralPath $infoPath)) {
-        Write-Log "info.json missing: $appFolderPath" -Tag "Error"
+        Write-Log "Missing: info.json" -Tag "Error"
         return $false
     }
     $appInfo = Get-Content -LiteralPath $infoPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    $displayName = if ($appInfo.Name) { $appInfo.Name } else { $appName }
+    $displayName = if ($appInfo.Name) { [string]$appInfo.Name } else { $folderSafeName }
     $description = if ($appInfo.Description) { $appInfo.Description } else { '' }
     $publisher = if ($appInfo.Publisher) { $appInfo.Publisher } else { '' }
     $informationUrl = if ($appInfo.InformationUrl) { $appInfo.InformationUrl } elseif ($appInfo.PublisherUrl) { $appInfo.PublisherUrl } else { '' }
@@ -563,35 +688,33 @@ function Invoke-Win32AppDeployment {
 
     $existingAppId = Get-ExistingAppId -displayName $displayName
     if ($null -ne $existingAppId -and -not $OverwriteExisting) {
-        Write-Log "Skipped (already in Intune): $displayName" -Tag "Info"
+        Write-Log "Skipped: $displayName" -Tag "Info"
         return 'Skipped'
     }
 
-    $intunewinPath = Join-Path $appFolderPath "$appName.intunewin"
+    $intunewinPath = Join-Path $appFolderPath "$folderSafeName.intunewin"
     if (-not (Test-Path -LiteralPath $intunewinPath)) {
         $intunewinCandidates = Get-ChildItem -LiteralPath $appFolderPath -Filter '*.intunewin' -File -ErrorAction SilentlyContinue
         $intunewinPath = ($intunewinCandidates | Select-Object -First 1).FullName
     }
     if (-not $intunewinPath -or -not (Test-Path -LiteralPath $intunewinPath)) {
-        Write-Log "No .intunewin in $appFolderPath" -Tag "Error"
+        Write-Log "Missing: .intunewin" -Tag "Error"
         return $false
     }
 
     $detectionPath = Join-Path $appFolderPath 'detection.ps1'
     if (-not (Test-Path -LiteralPath $detectionPath)) {
-        Write-Log "detection.ps1 missing: $appFolderPath" -Tag "Error"
+        Write-Log "Missing: detection.ps1" -Tag "Error"
         return $false
     }
 
-    Write-Log "Processing: $displayName (runAsAccount=$runAsAccount)" -Tag "Info"
+    Write-Log "$displayName" -Tag "Info"
     $iconCandidates = @(
-        $csvApplicationName
-        (Get-SafeName -name $csvApplicationName)
         $displayName
         (Get-SafeName -name $displayName)
-        $appName
+        $folderSafeName
     )
-    $wingetIdForIcon = if ($null -ne $appInfo.Id) { [string]$appInfo.Id } else { '' }
+    $wingetIdForIcon = if ($null -ne $appInfo.WingetId) { [string]$appInfo.WingetId } elseif ($null -ne $appInfo.Id) { [string]$appInfo.Id } else { '' }
     if (-not [string]::IsNullOrWhiteSpace($wingetIdForIcon)) {
         $wingetIdForIcon = $wingetIdForIcon.Trim()
         $iconCandidates += @($wingetIdForIcon, (Get-SafeName -name $wingetIdForIcon))
@@ -599,7 +722,7 @@ function Invoke-Win32AppDeployment {
     $iconBase64 = Get-IconBase64 -iconsFolder $iconsRoot -CandidateAppNames $iconCandidates
     if (-not $iconBase64) {
         $tried = $iconCandidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Sort-Object -Unique
-        Write-Log "No icon file in icons/ matched any of: $($tried -join ', ')" -Tag "Info"
+        Write-Log "Icon: none ($($tried -join ', '))" -Tag "Info"
     }
     $detectionRule = Get-DetectionRuleFromScript -scriptPath $detectionPath
     $winMetadata = Get-IntuneWinMetadata -intuneWinPath $intunewinPath
@@ -618,15 +741,15 @@ function Invoke-Win32AppDeployment {
             if ($logDebug) {
                 $dumpPath = Join-Path $logFileDirectory 'deploy-request-body.json'
                 $appBody | ConvertTo-Json -Depth 15 -Compress:$false | Set-Content -Path $dumpPath -Encoding UTF8
-                Write-Log "Request body saved: $dumpPath" -Tag "Debug"
+                Write-Log "Body: $dumpPath" -Tag "Debug"
             }
 
-            Write-Log "Creating Win32 app: $displayName" -Tag "Run"
+            Write-Log "Creating: $displayName" -Tag "Run"
             $createdApp = Invoke-GraphApi -method Post -resource '/deviceAppManagement/mobileApps' -body $appBody
             $appId = $createdApp.id
-            Write-Log "Created app id: $appId" -Tag "Success"
+            Write-Log "App id: $appId" -Tag "Info"
         } else {
-            Write-Log "Overwriting existing app: $displayName (id: $appId)" -Tag "Run"
+            Write-Log "Overwrite: $displayName ($appId)" -Tag "Run"
             $fullBody = New-Win32LobAppBody -displayName $displayName -description $description -publisher $publisher `
                 -informationUrl $informationUrl -privacyUrl $privacyUrl `
                 -fileName $winMetadata.FileName -setupFile $winMetadata.SetupFile -rules @($detectionRule) `
@@ -642,21 +765,37 @@ function Invoke-Win32AppDeployment {
                             type          = if ($existingApp.largeIcon.type) { $existingApp.largeIcon.type } else { 'image/png' }
                             value         = $existingApp.largeIcon.value
                         }
-                        Write-Log "No new local icon; re-including existing Intune largeIcon in PATCH (omit would clear it)" -Tag "Debug"
+                        Write-Log "largeIcon: preserve from Intune" -Tag "Debug"
                     } else {
-                        Write-Log "No local icon and app has no largeIcon in Intune to reuse" -Tag "Debug"
+                        Write-Log "largeIcon: none" -Tag "Debug"
                     }
                 } catch {
-                    Write-Log "Could not read existing largeIcon for preserve: $_" -Tag "Debug"
+                    Write-Log "largeIcon: read failed — $_" -Tag "Debug"
                 }
             }
-            Invoke-GraphApi -method Patch -resource "/deviceAppManagement/mobileApps/$appId" -body $fullBody
-            Write-Log "Updated all app metadata (display, description, icon, install, detection)" -Tag "Debug"
+            $null = Invoke-GraphApi -method Patch -resource "/deviceAppManagement/mobileApps/$appId" -body $fullBody
+            Write-Log "Metadata: patched" -Tag "Debug"
         }
 
-        # 2. Request content version
+        # 2. Request content version (412/ConditionNotMet until Intune finishes a prior revision — retry)
         $versionResource = "/deviceAppManagement/mobileApps/$appId/microsoft.graph.win32LobApp/contentVersions"
-        $contentVersion = Invoke-GraphApi -method Post -resource $versionResource -body '{}'
+        $contentVersion = $null
+        for ($cvAttempt = 1; $cvAttempt -le $contentVersionPostAttempts; $cvAttempt++) {
+            try {
+                $contentVersion = Invoke-GraphApi -method Post -resource $versionResource -body '{}'
+                break
+            }
+            catch {
+                $errText = "$($_.Exception.Message) $($_ | Out-String)"
+                $is412 = $errText -match '412|Precondition Failed|ConditionNotMet'
+                if (-not $is412 -or $cvAttempt -ge $contentVersionPostAttempts) { throw }
+                Write-Log "contentVersions: wait/retry $cvAttempt/$contentVersionPostAttempts (412)" -Tag "Get"
+                Start-Sleep -Seconds $contentVersionPostDelaySec
+            }
+        }
+        if (-not $contentVersion -or -not $contentVersion.id) {
+            throw "contentVersions: no version id after $contentVersionPostAttempts attempts"
+        }
         $versionId = $contentVersion.id
 
         # 3. Create file placeholder (Rozemuller: name, size, sizeEncrypted from Detection.xml)
@@ -674,7 +813,7 @@ function Invoke-Win32AppDeployment {
         $fileUri = "/deviceAppManagement/mobileApps/$appId/microsoft.graph.win32LobApp/contentVersions/$versionId/files/$fileId"
 
         # 4. Wait for azureStorageUri
-        Write-Log "Waiting for Azure Storage URI..." -Tag "Get"
+        Write-Log "Storage URI: waiting" -Tag "Get"
         $fileStatus = Invoke-GraphApi -method Get -resource $fileUri
         while ($fileStatus.uploadState -eq 'azureStorageUriRequestPending') {
             Start-Sleep -Seconds 5
@@ -686,7 +825,7 @@ function Invoke-Win32AppDeployment {
         $sasUri = $fileStatus.azureStorageUri
 
         # 5. Upload chunked to Azure
-        Write-Log "Uploading to Azure Storage..." -Tag "Run"
+        Write-Log "Uploading: $displayName" -Tag "Run"
         Send-ChunkedUpload -sasUri $sasUri -filePath $winMetadata.EncryptedFilePath -fileUri $fileUri
 
         # 6. Commit with encryption info (profileIdentifier must be "ProfileVersion1" per Microsoft sample)
@@ -702,8 +841,8 @@ function Invoke-Win32AppDeployment {
                 fileDigestAlgorithm  = $winMetadata.EncryptionInfo.fileDigestAlgorithm
             }
         }
-        Invoke-GraphApi -method Post -resource "$fileUri/commit" -body $commitBody
-        Write-Log "Waiting for commit..." -Tag "Get"
+        $null = Invoke-GraphApi -method Post -resource "$fileUri/commit" -body $commitBody
+        Write-Log "Commit: waiting" -Tag "Get"
         $fileStatus = Invoke-GraphApi -method Get -resource $fileUri
         while ($fileStatus.uploadState -eq 'commitFilePending') {
             Start-Sleep -Seconds 5
@@ -718,7 +857,7 @@ function Invoke-Win32AppDeployment {
             '@odata.type'             = '#microsoft.graph.win32LobApp'
             committedContentVersion   = $versionId
         }
-        Invoke-GraphApi -method Patch -resource "/deviceAppManagement/mobileApps/$appId" -body $patchBody
+        $null = Invoke-GraphApi -method Patch -resource "/deviceAppManagement/mobileApps/$appId" -body $patchBody
         Start-Sleep -Seconds $sleepAfterCommitSec
 
         # Intune often clears largeIcon after the Win32 upload/commit pipeline; re-apply when we have a local PNG.
@@ -728,39 +867,47 @@ function Invoke-Win32AppDeployment {
                 largeIcon     = (New-LargeIconMimeObject -IconBase64 $iconBase64)
             }
             try {
-                Invoke-GraphApi -method Patch -resource "/deviceAppManagement/mobileApps/$appId" -body $iconReapply
-                Write-Log "largeIcon applied again after content commit (upload pipeline)" -Tag "Get"
+                $null = Invoke-GraphApi -method Patch -resource "/deviceAppManagement/mobileApps/$appId" -body $iconReapply
+                Write-Log "largeIcon: reapplied" -Tag "Get"
             } catch {
-                Write-Log "Post-commit largeIcon PATCH failed: $_" -Tag "Error"
+                Write-Log "largeIcon: patch failed — $_" -Tag "Error"
             }
         }
 
         # 8. Set architectures via enableApplicableArchitectures (Requirements tab)
         $enableArchBody = @{ applicableArchitectures = $applicableArchitectures }
         try {
-            Invoke-GraphApi -method Post -resource "/deviceAppManagement/mobileApps/$appId/enableApplicableArchitectures" -body $enableArchBody
-            Write-Log "Set architectures: $applicableArchitectures" -Tag "Debug"
+            $null = Invoke-GraphApi -method Post -resource "/deviceAppManagement/mobileApps/$appId/enableApplicableArchitectures" -body $enableArchBody
+            Write-Log "Arch: $applicableArchitectures" -Tag "Debug"
         } catch {
-            Write-Log "enableApplicableArchitectures failed (non-fatal): $_" -Tag "Debug"
+            Write-Log "Arch: failed — $_" -Tag "Debug"
         }
 
-        Write-Log "Deployed: $displayName (id: $appId)" -Tag "Success"
+        Write-Log "Deployed: $displayName" -Tag "Success"
 
-        if (-not $isOverwrite -and $enableGroupCreation -and -not (Test-AppGroupBlacklisted -displayName $displayName)) {
-            try {
-                Set-AppGroupAssignments -appId $appId -displayName $displayName
-            } catch {
-                Write-Log "Group creation/assignment failed (non-fatal): $_" -Tag "Error"
+        if (-not $SkipGroupAssignment) {
+            if (-not $isOverwrite -and $enableGroupCreation -and -not (Test-AppGroupBlacklisted -displayName $displayName)) {
+                try {
+                    Set-AppGroupAssignments -appId $appId -displayName $displayName
+                }
+                catch {
+                    Write-Log "Groups: failed — $_" -Tag "Error"
+                }
             }
-        } elseif ($isOverwrite) {
-            Write-Log "Skipping group creation (overwrite mode): $displayName" -Tag "Info"
-        } elseif ($enableGroupCreation -and (Test-AppGroupBlacklisted -displayName $displayName)) {
-            Write-Log "Skipping group creation (app on blacklist): $displayName" -Tag "Info"
+            elseif ($isOverwrite) {
+                Write-Log "Skip groups: overwrite ($displayName)" -Tag "Info"
+            }
+            elseif ($enableGroupCreation -and (Test-AppGroupBlacklisted -displayName $displayName)) {
+                Write-Log "Skip groups: blacklist ($displayName)" -Tag "Info"
+            }
+        }
+        else {
+            Write-Log "Skip groups: deferred ($displayName)" -Tag "Debug"
         }
 
-        return $true
+        return [string]$appId.Trim()
     } catch {
-        Write-Log "Deploy failed for $displayName : $_" -Tag "Error"
+        Write-Log "Failed: $displayName — $_" -Tag "Error"
         return $false
     } finally {
         if ($winMetadata.TempDir -and (Test-Path -LiteralPath $winMetadata.TempDir)) {
@@ -770,28 +917,28 @@ function Invoke-Win32AppDeployment {
 }
 
 # ---------------------------[ Script Start ]---------------------------
-Write-Log "======== Script Started ========" -Tag "Start"
+Write-Log "==================== Start ====================" -Tag "Start"
 Write-Log "ComputerName: $env:COMPUTERNAME | User: $env:USERNAME | Script: $scriptName" -Tag "Info"
-Write-Log "Config: graphBaseUrl=$graphBaseUrl | appsRoot=$appsRoot | enableGroupCreation=$enableGroupCreation | OverwriteExisting=$OverwriteExisting" -Tag "Debug"
+Write-Log "appsRoot: $appsRoot" -Tag "Debug"
 
 if (-not (Test-Path -LiteralPath $appsRoot)) {
-    Write-Log "Apps folder not found. Run package.ps1 first." -Tag "Error"
+    Write-Log "Missing folder: apps" -Tag "Error"
     Complete-Script -ExitCode 1
 }
 if (-not (Test-Path -LiteralPath $csvPath)) {
-    Write-Log "apps.csv not found. Cannot deploy." -Tag "Error"
+    Write-Log "Missing: apps.csv" -Tag "Error"
     Complete-Script -ExitCode 1
 }
 
 try { Initialize-GraphConnection } catch {
-    Write-Log "Graph connection failed: $_" -Tag "Error"
+    Write-Log "Graph: failed — $_" -Tag "Error"
     Complete-Script -ExitCode 1
 }
 
 $rows = Import-Csv -LiteralPath $csvPath -Delimiter ','
 $totalRows = ($rows | Measure-Object).Count
 if ($totalRows -eq 0) {
-    Write-Log "apps.csv contains no rows." -Tag "Info"
+    Write-Log "CSV: empty" -Tag "Info"
     Complete-Script -ExitCode 0
 }
 
@@ -799,24 +946,124 @@ $deployedCount = 0
 $failedCount   = 0
 $skippedCount  = 0
 $notPackagedCount = 0
+$depsDeployed = 0
 
 foreach ($row in $rows) {
-    $appName = ([string]$row.ApplicationName).Trim()
-    if ([string]::IsNullOrWhiteSpace($appName)) { continue }
+    $wingetId = if ($row.PSObject.Properties['WingetAppId']) { ([string]$row.WingetAppId).Trim() } else { '' }
+    if ([string]::IsNullOrWhiteSpace($wingetId)) { continue }
 
-    $safeName = Get-SafeName -name $appName
-    $appFolderPath = Join-Path $appsRoot $safeName
-    if (-not (Test-Path -LiteralPath $appFolderPath) -or $safeName -eq 'temp') {
-        Write-Log "Skipped (not packaged): $appName" -Tag "Info"
+    $appFolderPath = Get-AppFolderPathForWingetId -AppsRoot $appsRoot -WingetId $wingetId
+    $folderSafeName = if ($appFolderPath) { Split-Path -Leaf $appFolderPath } else { '' }
+    if (-not $appFolderPath -or $folderSafeName -eq 'temp') {
+        Write-Log "Not packaged: $wingetId" -Tag "Info"
         $notPackagedCount++
         continue
     }
 
-    $result = Invoke-Win32AppDeployment -appFolderPath $appFolderPath -appName $safeName -csvApplicationName $appName
-    if ($result -eq $true)        { $deployedCount++ }
-    elseif ($result -eq 'Skipped') { $skippedCount++ }
-    else                          { $failedCount++ }
+    $infoMainPath = Join-Path $appFolderPath 'info.json'
+    if (-not (Test-Path -LiteralPath $infoMainPath)) {
+        Write-Log "Missing: info.json ($wingetId)" -Tag "Error"
+        $failedCount++
+        continue
+    }
+    try {
+        $mainAppInfo = Get-Content -LiteralPath $infoMainPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        Write-Log "Read failed: info.json ($wingetId) — $($_.Exception.Message)" -Tag "Error"
+        $failedCount++
+        continue
+    }
+    $mainDisplayName = if ($mainAppInfo.Name) { [string]$mainAppInfo.Name } else { $folderSafeName }
+
+    $depsDir = Join-Path $appFolderPath 'dependencies'
+    $depSubdirs = @()
+    if ($deployDependencies -and (Test-Path -LiteralPath $depsDir)) {
+        $depSubdirs = @(Get-ChildItem -LiteralPath $depsDir -Directory -ErrorAction SilentlyContinue)
+    }
+    $deferMainGroups = $depSubdirs.Count -gt 0
+
+    $depTargetIds = [System.Collections.Generic.List[string]]::new()
+    foreach ($depDir in $depSubdirs) {
+        $depInfoPath = Join-Path $depDir.FullName 'info.json'
+        if (-not (Test-Path -LiteralPath $depInfoPath)) {
+            Write-Log "Missing: info.json (dep $($depDir.Name))" -Tag "Error"
+            $failedCount++
+            continue
+        }
+        try {
+            $depInfo = Get-Content -LiteralPath $depInfoPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+        catch {
+            Write-Log "Read failed: dep info.json ($($depDir.Name)) — $($_.Exception.Message)" -Tag "Error"
+            $failedCount++
+            continue
+        }
+        $depDisplayName = if ($depInfo.Name) { [string]$depInfo.Name } else { $depDir.Name }
+        Write-Log "Dependency: $depDisplayName ($mainDisplayName)" -Tag "Info"
+        $depSafe = $depDir.Name
+        $depResult = Invoke-Win32AppDeployment -appFolderPath $depDir.FullName -folderSafeName $depSafe -SkipGroupAssignment
+        if ($depResult -and $depResult -ne 'Skipped') {
+            [void]$depTargetIds.Add([string]$depResult)
+            $depsDeployed++
+            Write-Log "Deployed dep: $depDisplayName" -Tag "Success"
+        }
+        elseif ($depResult -eq 'Skipped') {
+            $existingDepId = Get-ExistingAppId -displayName $depDisplayName
+            if ($existingDepId) {
+                [void]$depTargetIds.Add([string]$existingDepId)
+                Write-Log "Dep exists: $depDisplayName ($existingDepId)" -Tag "Info"
+            }
+        }
+        else {
+            Write-Log "Failed dep: $depDisplayName" -Tag "Error"
+            $failedCount++
+        }
+    }
+
+    $mainExistingBefore = Get-ExistingAppId -displayName $mainDisplayName
+
+    if ($deferMainGroups) {
+        $mainResult = Invoke-Win32AppDeployment -appFolderPath $appFolderPath -folderSafeName $folderSafeName -SkipGroupAssignment
+    }
+    else {
+        $mainResult = Invoke-Win32AppDeployment -appFolderPath $appFolderPath -folderSafeName $folderSafeName
+    }
+
+    if ($mainResult -and $mainResult -ne 'Skipped') {
+        if ($depTargetIds.Count -gt 0) {
+            try {
+                Add-MobileAppDependencyRelationships -MainAppId ([string]$mainResult) -TargetAppIds @($depTargetIds)
+            }
+            catch {
+                Write-Log "Dependencies: failed — $_" -Tag "Error"
+            }
+        }
+        if ($deferMainGroups) {
+            if (-not $mainExistingBefore -and $enableGroupCreation -and -not (Test-AppGroupBlacklisted -displayName $mainDisplayName)) {
+                try {
+                    Set-AppGroupAssignments -appId ([string]$mainResult) -displayName $mainDisplayName
+                }
+                catch {
+                    Write-Log "Deferred groups: failed — $_" -Tag "Error"
+                }
+            }
+            elseif ($mainExistingBefore) {
+                Write-Log "Skip groups: exists ($mainDisplayName)" -Tag "Info"
+            }
+            elseif ($enableGroupCreation -and (Test-AppGroupBlacklisted -displayName $mainDisplayName)) {
+                Write-Log "Skip groups: blacklist ($mainDisplayName)" -Tag "Info"
+            }
+        }
+        $deployedCount++
+    }
+    elseif ($mainResult -eq 'Skipped') {
+        $skippedCount++
+    }
+    else {
+        $failedCount++
+    }
 }
 
-Write-Log "Deploy summary: $deployedCount succeeded, $skippedCount skipped, $failedCount failed, $notPackagedCount not packaged (total in CSV: $totalRows)" -Tag "Info"
+Write-Log "Summary: $deployedCount ok · $skippedCount skipped · $failedCount failed" -Tag "Info"
 Complete-Script -ExitCode $(if ($failedCount -gt 0) { 1 } else { 0 })
