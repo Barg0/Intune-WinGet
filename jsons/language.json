@@ -10,7 +10,12 @@
       "Homepage": "Homepage",
       "Publisher Url": "Publisher Url",
       "Privacy Url": "Privacy Url",
-      "Installer": "Installer"
+      "Installer": "Installer",
+      "Dependencies": "Dependencies",
+      "Package Dependencies": "Package Dependencies",
+      "Windows Features": "Windows Features",
+      "Windows Libraries": "Windows Libraries",
+      "External Dependencies": "External Dependencies"
     },
     "noPackageSubstrings": ["No package found", "No applicable package", "No applicable installer"]
   },
@@ -23,7 +28,12 @@
         "Startseite": "Homepage",
         "Herausgeber-URL": "Publisher Url",
         "Datenschutz-URL": "Privacy Url",
-        "Installationsprogramm": "Installer"
+        "Installationsprogramm": "Installer",
+        "Abhängigkeiten": "Dependencies",
+        "Paketabhängigkeiten": "Package Dependencies",
+        "Windows-Features": "Windows Features",
+        "Windows-Bibliotheken": "Windows Libraries",
+        "Externe Abhängigkeiten": "External Dependencies"
       },
       "noPackageSubstrings": ["Es wurde kein Paket gefunden", "kein anwendbarer Installer", "Keine Installationsprogramme gefunden"]
     },
@@ -35,7 +45,12 @@
         "Page d'accueil": "Homepage",
         "ID de l'Editeur": "Publisher Url",
         "URL de confidentialité": "Privacy Url",
-        "Programme d'installation": "Installer"
+        "Programme d'installation": "Installer",
+        "Dépendances": "Dependencies",
+        "Dépendances de package": "Package Dependencies",
+        "Fonctionnalités Windows": "Windows Features",
+        "Bibliothèques Windows": "Windows Libraries",
+        "Dépendances externes": "External Dependencies"
       },
       "noPackageSubstrings": ["Aucun package ne correspond", "Aucun programme d'installation applicable", "Aucun programme d'installation trouvé"]
     },
@@ -47,7 +62,12 @@
         "主页": "Homepage",
         "发布服务器 URL": "Publisher Url",
         "隐私 URL": "Privacy Url",
-        "安装": "Installer"
+        "安装": "Installer",
+        "依赖项": "Dependencies",
+        "包依赖项": "Package Dependencies",
+        "Windows 功能": "Windows Features",
+        "Windows 库": "Windows Libraries",
+        "外部依赖项": "External Dependencies"
       },
       "noPackageSubstrings": ["找不到与输入条件匹配的程序包", "找不到适用的安装程序", "未找到程序包"]
     },
@@ -57,7 +77,12 @@
         "Publicador": "Publisher",
         "Descripción": "Description",
         "Página principal": "Homepage",
-        "Instalador": "Installer"
+        "Instalador": "Installer",
+        "Dependencias": "Dependencies",
+        "Dependencias de paquete": "Package Dependencies",
+        "Características de Windows": "Windows Features",
+        "Bibliotecas de Windows": "Windows Libraries",
+        "Dependencias externas": "External Dependencies"
       },
       "noPackageSubstrings": ["No se encontró ningún paquete", "ningún instalador aplicable"]
     },
@@ -67,33 +92,167 @@
         "Editore": "Publisher",
         "Descrizione": "Description",
         "Homepage": "Homepage",
-        "Programma di installazione": "Installer"
+        "Programma di installazione": "Installer",
+        "Dipendenze": "Dependencies",
+        "Dipendenze pacchetto": "Package Dependencies",
+        "Funzionalità di Windows": "Windows Features",
+        "Librerie di Windows": "Windows Libraries",
+        "Dipendenze esterne": "External Dependencies"
       },
       "noPackageSubstrings": ["Nessun pacchetto trovato", "nessun programma di installazione applicabile"]
     },
     "ja-JP": {
       "foundWord": "見つかりました",
-      "labels": {},
+      "labels": {
+        "依存関係": "Dependencies",
+        "パッケージの依存関係": "Package Dependencies",
+        "Windows の機能": "Windows Features",
+        "Windows ライブラリ": "Windows Libraries",
+        "外部依存関係": "External Dependencies"
+      },
       "noPackageSubstrings": []
     },
     "ko-KR": {
       "foundWord": "찾음",
-      "labels": {},
+      "labels": {
+        "종속성": "Dependencies",
+        "패키지 종속성": "Package Dependencies",
+        "Windows 기능": "Windows Features",
+        "Windows 라이브러리": "Windows Libraries",
+        "외부 종속성": "External Dependencies"
+      },
       "noPackageSubstrings": []
     },
     "pt-BR": {
       "foundWord": "Encontrado",
-      "labels": {},
+      "labels": {
+        "Dependências": "Dependencies",
+        "Dependências de pacote": "Package Dependencies",
+        "Recursos do Windows": "Windows Features",
+        "Bibliotecas do Windows": "Windows Libraries",
+        "Dependências externas": "External Dependencies"
+      },
       "noPackageSubstrings": []
     },
     "ru-RU": {
       "foundWord": "Найдено",
-      "labels": {},
+      "labels": {
+        "Зависимости": "Dependencies",
+        "Зависимости пакета": "Package Dependencies",
+        "Компоненты Windows": "Windows Features",
+        "Библиотеки Windows": "Windows Libraries",
+        "Внешние зависимости": "External Dependencies"
+      },
       "noPackageSubstrings": []
     },
     "zh-TW": {
       "foundWord": "已找到",
-      "labels": {},
+      "labels": {
+        "相依性": "Dependencies",
+        "套件相依性": "Package Dependencies",
+        "Windows 功能": "Windows Features",
+        "Windows 程式庫": "Windows Libraries",
+        "外部相依性": "External Dependencies"
+      },
+      "noPackageSubstrings": []
+    },
+    "nl-NL": {
+      "foundWord": "Gevonden",
+      "labels": {
+        "Afhankelijkheden": "Dependencies",
+        "Pakketafhankelijkheden": "Package Dependencies",
+        "Windows-onderdelen": "Windows Features",
+        "Windows-bibliotheken": "Windows Libraries",
+        "Externe afhankelijkheden": "External Dependencies"
+      },
+      "noPackageSubstrings": []
+    },
+    "pl-PL": {
+      "foundWord": "Znaleziono",
+      "labels": {
+        "Zależności": "Dependencies",
+        "Zależności pakietów": "Package Dependencies",
+        "Funkcje systemu Windows": "Windows Features",
+        "Biblioteki systemu Windows": "Windows Libraries",
+        "Zewnętrzne zależności": "External Dependencies"
+      },
+      "noPackageSubstrings": []
+    },
+    "cs-CZ": {
+      "foundWord": "Nalezeno",
+      "labels": {
+        "Závislosti": "Dependencies",
+        "Závislosti balíčků": "Package Dependencies",
+        "Funkce systému Windows": "Windows Features",
+        "Knihovny Windows": "Windows Libraries",
+        "Externí závislosti": "External Dependencies"
+      },
+      "noPackageSubstrings": []
+    },
+    "tr-TR": {
+      "foundWord": "Bulundu",
+      "labels": {
+        "Bağımlılıklar": "Dependencies",
+        "Paket bağımlılıkları": "Package Dependencies",
+        "Windows özellikleri": "Windows Features",
+        "Windows kitaplıkları": "Windows Libraries",
+        "Dış bağımlılıklar": "External Dependencies"
+      },
+      "noPackageSubstrings": []
+    },
+    "sv-SE": {
+      "foundWord": "Hittades",
+      "labels": {
+        "Beroenden": "Dependencies",
+        "Paketberoenden": "Package Dependencies",
+        "Windows-funktioner": "Windows Features",
+        "Windows-bibliotek": "Windows Libraries",
+        "Externa beroenden": "External Dependencies"
+      },
+      "noPackageSubstrings": []
+    },
+    "nb-NO": {
+      "foundWord": "Funnet",
+      "labels": {
+        "Avhengigheter": "Dependencies",
+        "Pakkeavhengigheter": "Package Dependencies",
+        "Windows-funksjoner": "Windows Features",
+        "Windows-biblioteker": "Windows Libraries",
+        "Eksterne avhengigheter": "External Dependencies"
+      },
+      "noPackageSubstrings": []
+    },
+    "da-DK": {
+      "foundWord": "Fundet",
+      "labels": {
+        "Afhængigheder": "Dependencies",
+        "Pakkeafhængigheder": "Package Dependencies",
+        "Windows-funktioner": "Windows Features",
+        "Windows-biblioteker": "Windows Libraries",
+        "Eksterne afhængigheder": "External Dependencies"
+      },
+      "noPackageSubstrings": []
+    },
+    "fi-FI": {
+      "foundWord": "Löytyi",
+      "labels": {
+        "Riippuvuudet": "Dependencies",
+        "Pakettikohtaiset riippuvuudet": "Package Dependencies",
+        "Windowsin ominaisuudet": "Windows Features",
+        "Windowsin kirjastot": "Windows Libraries",
+        "Ulkoiset riippuvuudet": "External Dependencies"
+      },
+      "noPackageSubstrings": []
+    },
+    "hu-HU": {
+      "foundWord": "Megtalálva",
+      "labels": {
+        "Függőségek": "Dependencies",
+        "Csomagfüggőségek": "Package Dependencies",
+        "Windows-funkciók": "Windows Features",
+        "Windows-kódtárak": "Windows Libraries",
+        "Külső függőségek": "External Dependencies"
+      },
       "noPackageSubstrings": []
     }
   }

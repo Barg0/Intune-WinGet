@@ -122,7 +122,7 @@ function Install-IntuneWinAppUtil {
         Invoke-WebRequest -Uri $intuneWinAppUtilDownloadUrl -OutFile $DestinationPath -UseBasicParsing
     }
     catch {
-        Write-Log "IntuneWinAppUtil: download failed — $($_.Exception.Message)" -Tag "Error"
+        Write-Log "IntuneWinAppUtil: download failed  -  $($_.Exception.Message)" -Tag "Error"
         Complete-Script -ExitCode 1
     }
     if (-not (Test-Path -LiteralPath $DestinationPath)) {
@@ -172,7 +172,7 @@ function Set-Placeholders {
     if ($contextNormalized -notmatch '^(system|user)$') { $contextNormalized = 'system' }
     $content = $content.Replace('__INSTALL_CONTEXT__', $contextNormalized)
 
-    # Escape single quotes for PowerShell single-quoted strings: ' → ''
+    # Escape single quotes for PowerShell single-quoted strings: ' -> ''
     $sq = @{ name = $applicationName.Replace("'", "''"); id = $wingetAppId.Replace("'", "''"); ctx = $contextNormalized.Replace("'", "''") }
 
     if (-not [string]::IsNullOrWhiteSpace($installOverride)) {
@@ -260,14 +260,22 @@ function ConvertFrom-WingetLocalizedOutput {
         }
     }
 
-    # Replace localized "Found" word on first line
+    # Replace localized "Found" word on the banner line (not always line 0 — blank / agreement lines first)
     $foundWord = $locale.foundWord
     if ($foundWord -and $foundWord -ne 'Found') {
+        $fwEsc = [regex]::Escape($foundWord)
         $lines = $result -split "`r?`n"
-        if ($lines.Count -gt 0 -and $lines[0] -match "^$([regex]::Escape($foundWord))\s+") {
-            $lines[0] = $lines[0] -replace "^$([regex]::Escape($foundWord))\s+", 'Found '
-            $result = $lines -join "`n"
+        $maxFoundScan = [Math]::Min(25, $lines.Count)
+        for ($li = 0; $li -lt $maxFoundScan; $li++) {
+            $ln = $lines[$li]
+            if ($null -eq $ln) { continue }
+            $probe = $ln.TrimStart([char]0xFEFF)
+            if ($probe -match "^$fwEsc\s+") {
+                $lines[$li] = $ln -replace "^(\s*)$fwEsc(\s+)", '${1}Found$2'
+                break
+            }
         }
+        $result = $lines -join "`n"
     }
 
     # Replace localized labels with English (e.g. "Herausgeber:" -> "Publisher:")
@@ -377,7 +385,7 @@ function Get-AppOutputFolderByWingetId {
             }
         }
         catch {
-            Write-Log "Read failed: $jsonPath — $($_.Exception.Message)" -Tag "Debug"
+            Write-Log "Read failed: $jsonPath  -  $($_.Exception.Message)" -Tag "Debug"
         }
     }
     return $null
@@ -448,13 +456,25 @@ function ConvertFrom-WingetShowOutput {
     $installersList = [System.Collections.ArrayList]::new()
     $normalizeKey = { param([string]$k) ($k -replace '\s+', '').Trim() }
 
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        $line = $lines[$i]
-        if ($i -eq 0 -and $line -match 'Found\s+(.+?)\s+\[(.+?)\]') {
+    # "Found <Name> [<Id>]" is not always on line 0 (blank lines, source-agreement text, etc.)
+    $foundBannerIndex = -1
+    $scanMax = [Math]::Min(40, $lines.Count)
+    for ($fi = 0; $fi -lt $scanMax; $fi++) {
+        $raw = $lines[$fi]
+        if ($null -eq $raw) { continue }
+        $trimmed = $raw.TrimStart([char]0xFEFF).Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+        if ($trimmed -match '^Found\s+(.+)\s+\[([^\]]+)\]\s*$') {
             $obj['Name'] = $Matches[1].Trim()
             $obj['Id']   = $Matches[2].Trim()
-            continue
+            $foundBannerIndex = $fi
+            break
         }
+    }
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i]
+        if ($i -eq $foundBannerIndex) { continue }
         if ($line -match '^([A-Za-z][A-Za-z0-9\s\-]*):\s*(.*)$' -and $line -notmatch '^\s{2,}') {
             if ($currentKey -and $currentValue.Count -gt 0) {
                 $val = if ($currentValue.Count -eq 1) { $currentValue[0] } else { $currentValue.ToArray() }
@@ -600,7 +620,7 @@ function Export-WingetShowToJson {
         Set-Content -LiteralPath $jsonPath -Value $jsonContent -Encoding UTF8
     }
     catch {
-        Write-Log "Write failed: info.json — $($_.Exception.Message)" -Tag "Error"
+        Write-Log "Write failed: info.json  -  $($_.Exception.Message)" -Tag "Error"
         return $false
     }
     return $true
@@ -702,7 +722,7 @@ function Invoke-PackageSingleWingetApp {
             New-IntuneWinPackage -sourceFolder $packTemp -setupFile 'install.ps1' -outputFolder $packTemp
         }
         catch {
-            Write-Log "Failed: $AppDisplayName — $($_.Exception.Message)" -Tag "Error"
+            Write-Log "Failed: $AppDisplayName  -  $($_.Exception.Message)" -Tag "Error"
             return $false
         }
         $defaultIntuneWin = Join-Path $packTemp 'install.intunewin'

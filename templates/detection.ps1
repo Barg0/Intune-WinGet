@@ -161,7 +161,7 @@ Write-Log "Id $wingetAppId | Context $installContext" -Tag "Info"
 # WinGet list: exit 0 = package found; -1978335212 (NO_APPLICATIONS_FOUND) = not installed
 $isUserContext = ($installContext -eq 'user')
 $wingetExe = if ($isUserContext) { 'winget' } else { (Get-WingetPath) }
-if (-not $isUserContext) { Write-Log "WinGet path OK (system)" -Tag "Get" }
+if (-not $isUserContext) { Write-Log "WinGet path OK (system)" -Tag "Debug" }
 
 try {
     $wingetCheck = Test-WingetVersion -wingetPath $wingetExe

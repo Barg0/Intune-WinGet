@@ -247,7 +247,7 @@ If you have a `7-Zip.png` icon, place it in the `icons/` folder. It will show up
 2026-04-11 14:35:51 [  Run     ] Group: Win - SW - AV - 7-Zip
 2026-04-11 14:35:52 [  Success ] Groups assigned
 2026-04-11 14:35:52 [  Success ] Deployed: 7-Zip
-2026-04-11 14:35:52 [  Info    ] Summary: 1 ok · 0 skipped · 0 failed
+2026-04-11 14:35:52 [  Info    ] Summary: 1 ok | 0 skipped | 0 failed
 2026-04-11 14:35:52 [  Info    ] Runtime 00:00:51.00
 2026-04-11 14:35:52 [  Info    ] Exit 0
 2026-04-11 14:35:52 [  End     ] ==================== End ====================
@@ -442,7 +442,7 @@ If no icon is found for an app, the app deploys without one (Intune uses a gener
    - 🖼️ Uploads the icon if one exists in `icons/`.
    - 🔗 When dependencies were deployed, calls Graph **`POST .../mobileApps/{id}/updateRelationships`** with a `relationships` array of **`mobileAppDependency`** entries (`autoInstall`). Existing **`mobileAppSupersedence`** rows returned by Graph for that app are merged into the same payload so portal-configured supersedence is not cleared when possible.
    - 👥 Creates two Entra ID security groups and assigns them to the **main** app (dependencies never get their own assignment groups).
-4. 📊 **Prints a summary** line such as `Summary: N ok · S skipped · F failed` (counts from the CSV run).
+4. 📊 **Prints a summary** line such as `Summary: N ok | S skipped | F failed` (counts from the CSV run).
 
 ### 🌐 Graph sign-in
 

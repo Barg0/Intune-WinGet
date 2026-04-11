@@ -159,16 +159,28 @@ function Complete-Script {
 #   RetryScope - No applicable installer for scope; retry without --scope. Exit 0/1 after retry.
 #   RetrySource - Pinned certificate mismatch; retry with --source winget. Exit 0/1 after retry.
 #   RetryLater - Transient (app in use, disk full, reboot needed, etc.). Exit 0 so Intune retries.
+#   RetryBusy  - Same install should be retried after a delay (shared queue / engine busy). Mapped
+#                codes use the inner wait loop ($maxInProgressRetries x $inProgressDelaySeconds); add
+#                more hashtable entries here only when that backoff is appropriate.
 #   Fail      - Unrecoverable (policy, unsupported, invalid param). Exit 1.
 #   Unknown   - Unmapped code; log and treat as Fail.
 #
 # Retry engine: A loop applies workarounds based on category. Each workaround (RetryScope,
 # RetrySource) is tried at most once. Workarounds chain automatically - e.g. RetrySource ->
 # RetryScope produces a final attempt with --source winget and no --scope. Every winget call
-# is also wrapped in an in-progress wait loop (RetryLater for -1978334974).
+# is wrapped in a RetryBusy wait loop (see $maxInProgressRetries / $inProgressDelaySeconds).
 #
 # Install-specific errors (0x8A150101-0x8A150114) and general errors are included so logs are clear
 # and behaviour is consistent. Some codes are unlikely in silent/automated runs but are still mapped.
+#
+# WinGet often returns signed 32-bit HRESULTs (negative). Do not cast those directly to [uint32] for
+# hex display - it throws. Reinterpret bits via BitConverter (same as Intune-WinGet-Update remediation.ps1).
+function Format-WingetExitCodeHex {
+    param([int]$Code)
+    $u = [System.BitConverter]::ToUInt32([System.BitConverter]::GetBytes([int32]$Code), 0)
+    return ('0x{0:X8}' -f $u)
+}
+
 function Get-WingetExitCodeInfo {
     [CmdletBinding()]
     param([int]$ExitCode)
@@ -187,9 +199,12 @@ function Get-WingetExitCodeInfo {
         # --- RetrySource: retry with --source winget ---
         -1978335138    = @{ Category = "RetrySource"; Description = "Pinned certificate mismatch" }            # PINNED_CERTIFICATE_MISMATCH
 
+        # --- RetryBusy: wait and re-run same winget install (see inner loop in retry engine) ---
+        -1978334974    = @{ Category = "RetryBusy"; Description = "Another installation in progress" }       # INSTALL_IN_PROGRESS
+        -1978335226    = @{ Category = "RetryBusy"; Description = "Shell install failed" }                  # SHELLEXEC_INSTALL_FAILED
+        
         # --- RetryLater: transient; exit 0 so Intune can retry ---
         -1978334975    = @{ Category = "RetryLater"; Description = "Application is currently running" }       # INSTALL_PACKAGE_IN_USE
-        -1978334974    = @{ Category = "RetryLater"; Description = "Another installation in progress" }       # INSTALL_IN_PROGRESS
         -1978334973    = @{ Category = "RetryLater"; Description = "One or more file is in use" }            # INSTALL_FILE_IN_USE
         -1978334971    = @{ Category = "RetryLater"; Description = "Disk full" }                             # INSTALL_DISK_FULL
         -1978334970    = @{ Category = "RetryLater"; Description = "Insufficient memory" }                    # INSTALL_INSUFFICIENT_MEMORY
@@ -217,7 +232,8 @@ function Get-WingetExitCodeInfo {
     if ($codeMap.ContainsKey($ExitCode)) {
         return $codeMap[$ExitCode]
     }
-    return @{ Category = "Unknown"; Description = "Unmapped exit code $ExitCode" }
+    $hex = Format-WingetExitCodeHex -Code $ExitCode
+    return @{ Category = "Unknown"; Description = "Unmapped exit code $ExitCode ($hex)" }
 }
 
 # ---------------------------[ Winget Path Resolver ]---------------------------
@@ -268,7 +284,7 @@ function Test-WingetVersion {
     $versionString = ($versionOutput | Out-String).Trim()
     $isHealthy = ($exitCode -eq 0)
     if (-not $isHealthy) {
-        Write-Log "WinGet --version: exit $exitCode" -Tag "Debug"
+        Write-Log "WinGet --version: exit $exitCode $(Format-WingetExitCodeHex $exitCode)" -Tag "Debug"
     }
     return @{ IsHealthy = $isHealthy; Version = $versionString; ExitCode = $exitCode }
 }
@@ -282,7 +298,7 @@ Write-Log "Id $wingetAppId | Context $installContext" -Tag "Info"
 # User context: call winget directly (available in PATH). System context: resolve path from WindowsApps.
 $isUserContext = ($installContext -eq 'user')
 $wingetExe = if ($isUserContext) { 'winget' } else { (Get-WingetPath) }
-if (-not $isUserContext) { Write-Log "WinGet path OK (system)" -Tag "Get" }
+if (-not $isUserContext) { Write-Log "WinGet path OK (system)" -Tag "Debug" }
 
 try {
     $wingetCheck = Test-WingetVersion -wingetPath $wingetExe
@@ -296,26 +312,27 @@ try {
         }
     }
     if (-not $wingetCheck.IsHealthy) {
-        Write-Log "WinGet unavailable (exit $($wingetCheck.ExitCode)); retry later or repair App Installer / system context" -Tag "Error"
+        $ec = $wingetCheck.ExitCode
+        Write-Log "WinGet unavailable (exit $ec $(Format-WingetExitCodeHex $ec)); retry later or repair App Installer / system context" -Tag "Error"
         Complete-Script -ExitCode 0
     }
 
     # ---------------------------[ Retry Engine ]---------------------------
     # Workaround flags - each is applied at most once. The engine loops until success or
-    # no more workarounds remain. Every winget invocation is wrapped with the in-progress
-    # wait loop so that "another installation in progress" is handled consistently.
+    # no more workarounds remain. Every winget invocation is wrapped in the RetryBusy wait loop
+    # (codes mapped as RetryBusy in Get-WingetExitCodeInfo).
     $defaultScope      = if ($isUserContext) { 'user' } else { 'machine' }
     $useScope          = $true
     $useSource         = $false
     $triedNoScope      = $false
     $triedSource       = $false
 
+    # Used only for Category RetryBusy (default: INSTALL_IN_PROGRESS).
     $maxInProgressRetries   = 15
     $inProgressDelaySeconds = 120
 
     if (-not [string]::IsNullOrWhiteSpace($installOverride)) {
-        Write-Log "Override: set" -Tag "Info"
-        Write-Log "$installOverride" -Tag "Debug"
+        Write-Log "Override: $installOverride" -Tag "Info"
     }
 
     while ($true) {
@@ -332,16 +349,16 @@ try {
         $sourceLabel = if ($useSource) { ", source winget" } else { "" }
         $attemptLabel = "$scopeLabel$sourceLabel"
 
-        # --- In-progress retry loop (wraps every attempt) ---
+        # --- RetryBusy: wait and re-invoke winget (category-driven; see Get-WingetExitCodeInfo) ---
         $inProgressCount = 0
         do {
             if ($inProgressCount -gt 0) {
-                Write-Log "Install busy; wait ${inProgressDelaySeconds}s ($inProgressCount/$maxInProgressRetries)" -Tag "Info"
+                Write-Log "RetryBusy; wait ${inProgressDelaySeconds}s ($inProgressCount/$maxInProgressRetries)" -Tag "Info"
                 Start-Sleep -Seconds $inProgressDelaySeconds
             }
 
             $runLabel = "Install ($attemptLabel)"
-            if ($inProgressCount -gt 0) { $runLabel += " [busy $inProgressCount/$maxInProgressRetries]" }
+            if ($inProgressCount -gt 0) { $runLabel += " [RetryBusy $inProgressCount/$maxInProgressRetries]" }
             Write-Log "$runLabel" -Tag "Run"
             Write-Log "winget $($currentArgs -join ' ')" -Tag "Debug"
 
@@ -362,16 +379,16 @@ try {
             $p.WaitForExit()
             $exitCode = $p.ExitCode
             $exitInfo = Get-WingetExitCodeInfo -exitCode $exitCode
-            Write-Log "Exit $exitCode | $($exitInfo.Category) | $($exitInfo.Description)" -Tag "Info"
+            Write-Log "Exit $exitCode $(Format-WingetExitCodeHex $exitCode) | $($exitInfo.Category) | $($exitInfo.Description)" -Tag "Info"
 
-            if ($exitCode -ne -1978334974) { break }
+            if ($exitInfo.Category -ne "RetryBusy") { break }
 
             $inProgressCount++
         } while ($inProgressCount -le $maxInProgressRetries)
 
-        # Still blocked after all in-progress retries; exit 0 so Intune can retry later
-        if ($exitCode -eq -1978334974) {
-            Write-Log "Install busy (max waits); exit 0 for retry" -Tag "Error"
+        # Still RetryBusy after max waits; exit 0 so Intune can retry later
+        if ($exitInfo.Category -eq "RetryBusy") {
+            Write-Log "RetryBusy (max waits); exit 0 for retry" -Tag "Error"
             Complete-Script -ExitCode 0
         }
 

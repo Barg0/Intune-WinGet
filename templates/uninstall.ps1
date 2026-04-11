@@ -179,7 +179,7 @@ Write-Log "Id $wingetAppId | Context $installContext" -Tag "Info"
 # ---------------------------[ Winget Uninstall ]---------------------------
 $isUserContext = ($installContext -eq 'user')
 $wingetExe = if ($isUserContext) { 'winget' } else { (Get-WingetPath) }
-if (-not $isUserContext) { Write-Log "WinGet path OK (system)" -Tag "Get" }
+if (-not $isUserContext) { Write-Log "WinGet path OK (system)" -Tag "Debug" }
 
 try {
     $wingetCheck = Test-WingetVersion -wingetPath $wingetExe
