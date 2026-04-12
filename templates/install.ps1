@@ -157,17 +157,15 @@ function Complete-Script {
 # Categories:
 #   Success   - Desired state (installed or already installed). Exit 0.
 #   RetryScope - No applicable installer for scope; retry without --scope. Exit 0/1 after retry.
-#   RetrySource - Pinned certificate mismatch; retry with --source winget. Exit 0/1 after retry.
 #   RetryLater - Transient (app in use, disk full, reboot needed, etc.). Exit 0 so Intune retries.
-#   RetryBusy  - Same install should be retried after a delay (shared queue / engine busy). Mapped
-#                codes use the inner wait loop ($maxInProgressRetries x $inProgressDelaySeconds); add
-#                more hashtable entries here only when that backoff is appropriate.
+#   RetryBusy  - Same install should be retried after a delay (in progress, shell exec, pinned cert,
+#                etc.). Mapped codes use the inner wait loop ($maxInProgressRetries x $inProgressDelaySeconds);
+#                add more hashtable entries here only when that backoff is appropriate.
 #   Fail      - Unrecoverable (policy, unsupported, invalid param). Exit 1.
 #   Unknown   - Unmapped code; same backoff as RetryBusy up to $maxUnknownRetries, then Fail.
 #
-# Retry engine: A loop applies workarounds based on category. Each workaround (RetryScope,
-# RetrySource) is tried at most once. Workarounds chain automatically - e.g. RetrySource ->
-# RetryScope produces a final attempt with --source winget and no --scope. Every winget call
+# Retry engine: A loop applies workarounds based on category. RetryScope (drop --scope) at most once.
+# Every install line includes --source winget (same as Intune-WinGet-Update). Every winget call
 # is wrapped in a RetryBusy wait loop (see $maxInProgressRetries / $inProgressDelaySeconds).
 #
 # Install-specific errors (0x8A150101-0x8A150114) and general errors are included so logs are clear
@@ -196,12 +194,10 @@ function Get-WingetExitCodeInfo {
         # --- RetryScope: retry without machine scope ---
         -1978335216    = @{ Category = "RetryScope"; Description = "No applicable installer for scope" }      # NO_APPLICABLE_INSTALLER
 
-        # --- RetrySource: retry with --source winget ---
-        -1978335138    = @{ Category = "RetrySource"; Description = "Pinned certificate mismatch" }            # PINNED_CERTIFICATE_MISMATCH
-
         # --- RetryBusy: wait and re-run same winget install (see inner loop in retry engine) ---
         -1978334974    = @{ Category = "RetryBusy"; Description = "Another installation in progress" }       # INSTALL_IN_PROGRESS
         -1978335226    = @{ Category = "RetryBusy"; Description = "Shell install failed" }                  # SHELLEXEC_INSTALL_FAILED
+        -1978335138    = @{ Category = "RetryBusy"; Description = "Pinned certificate mismatch" }            # PINNED_CERTIFICATE_MISMATCH
         
         # --- RetryLater: transient; exit 0 so Intune can retry ---
         -1978334975    = @{ Category = "RetryLater"; Description = "Application is currently running" }       # INSTALL_PACKAGE_IN_USE
@@ -329,9 +325,8 @@ try {
     # separate capped wait/retry loop ($maxUnknownRetries) before failing.
     $defaultScope      = if ($isUserContext) { 'user' } else { 'machine' }
     $useScope          = $true
-    $useSource         = $false
+    $useSource         = $true
     $triedNoScope      = $false
-    $triedSource       = $false
 
     # Used only for Category RetryBusy (default: INSTALL_IN_PROGRESS).
     $maxInProgressRetries   = 15
@@ -407,7 +402,7 @@ try {
 
             # --- Success ---
             if ($exitCode -eq 0 -or $exitInfo.Category -eq "Success") {
-                if ($triedNoScope -or $triedSource) {
+                if ($triedNoScope) {
                     Write-Log "Install OK ($attemptLabel)" -Tag "Success"
                 } else {
                     Write-Log "Install OK" -Tag "Success"
@@ -439,13 +434,6 @@ try {
             Write-Log "Retry: no --scope" -Tag "Info"
             $useScope      = $false
             $triedNoScope  = $true
-            $workaroundApplied = $true
-        }
-
-        if ($exitInfo.Category -eq "RetrySource" -and -not $triedSource) {
-            Write-Log "Retry: --source winget" -Tag "Info"
-            $useSource     = $true
-            $triedSource   = $true
             $workaroundApplied = $true
         }
 
