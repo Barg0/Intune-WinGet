@@ -163,7 +163,7 @@ function Complete-Script {
 #                codes use the inner wait loop ($maxInProgressRetries x $inProgressDelaySeconds); add
 #                more hashtable entries here only when that backoff is appropriate.
 #   Fail      - Unrecoverable (policy, unsupported, invalid param). Exit 1.
-#   Unknown   - Unmapped code; log and treat as Fail.
+#   Unknown   - Unmapped code; same backoff as RetryBusy up to $maxUnknownRetries, then Fail.
 #
 # Retry engine: A loop applies workarounds based on category. Each workaround (RetryScope,
 # RetrySource) is tried at most once. Workarounds chain automatically - e.g. RetrySource ->
@@ -317,10 +317,16 @@ try {
         Complete-Script -ExitCode 0
     }
 
+    # One-time source refresh before install (aligned with Intune-WinGet-Update remediation.ps1).
+    Write-Log "WinGet source update" -Tag "Run"
+    $null = & $wingetExe source update 2>&1
+    Write-Log "Sources OK" -Tag "Debug"
+
     # ---------------------------[ Retry Engine ]---------------------------
     # Workaround flags - each is applied at most once. The engine loops until success or
     # no more workarounds remain. Every winget invocation is wrapped in the RetryBusy wait loop
-    # (codes mapped as RetryBusy in Get-WingetExitCodeInfo).
+    # (codes mapped as RetryBusy in Get-WingetExitCodeInfo). Unmapped (Unknown) exits use a
+    # separate capped wait/retry loop ($maxUnknownRetries) before failing.
     $defaultScope      = if ($isUserContext) { 'user' } else { 'machine' }
     $useScope          = $true
     $useSource         = $false
@@ -330,6 +336,10 @@ try {
     # Used only for Category RetryBusy (default: INSTALL_IN_PROGRESS).
     $maxInProgressRetries   = 15
     $inProgressDelaySeconds = 120
+
+    # Unknown (unmapped) exit codes: re-run the same winget line after a delay, capped per attempt.
+    $maxUnknownRetries      = 3
+    $unknownDelaySeconds    = $inProgressDelaySeconds
 
     if (-not [string]::IsNullOrWhiteSpace($installOverride)) {
         Write-Log "Override: $installOverride" -Tag "Info"
@@ -349,63 +359,77 @@ try {
         $sourceLabel = if ($useSource) { ", source winget" } else { "" }
         $attemptLabel = "$scopeLabel$sourceLabel"
 
-        # --- RetryBusy: wait and re-invoke winget (category-driven; see Get-WingetExitCodeInfo) ---
-        $inProgressCount = 0
-        do {
-            if ($inProgressCount -gt 0) {
-                Write-Log "RetryBusy; wait ${inProgressDelaySeconds}s ($inProgressCount/$maxInProgressRetries)" -Tag "Info"
-                Start-Sleep -Seconds $inProgressDelaySeconds
+        $unknownRetryCount = 0
+        :unknownRetryLoop while ($true) {
+            # --- RetryBusy: wait and re-invoke winget (category-driven; see Get-WingetExitCodeInfo) ---
+            $inProgressCount = 0
+            do {
+                if ($inProgressCount -gt 0) {
+                    Write-Log "RetryBusy; wait ${inProgressDelaySeconds}s ($inProgressCount/$maxInProgressRetries)" -Tag "Info"
+                    Start-Sleep -Seconds $inProgressDelaySeconds
+                }
+
+                $runLabel = "Install ($attemptLabel)"
+                if ($inProgressCount -gt 0) { $runLabel += " [RetryBusy $inProgressCount/$maxInProgressRetries]" }
+                if ($unknownRetryCount -gt 0) { $runLabel += " [Unknown retry $unknownRetryCount/$maxUnknownRetries]" }
+                Write-Log "$runLabel" -Tag "Run"
+                Write-Log "winget $($currentArgs -join ' ')" -Tag "Debug"
+
+                # Use ProcessStartInfo so --override is passed as exactly one argument.
+                # PowerShell's & splatting can split args with spaces; winget fails with
+                # "An argument was provided that can only be used for single package".
+                # Ref: https://github.com/microsoft/winget-cli/issues/1317, https://github.com/microsoft/winget-cli/issues/5240
+                $psi = [System.Diagnostics.ProcessStartInfo]::new()
+                $psi.FileName = $wingetExe
+                $psi.UseShellExecute = $false
+                $psi.CreateNoWindow = $true
+                if ($psi.PSObject.Properties['ArgumentList']) {
+                    foreach ($arg in $currentArgs) { [void]$psi.ArgumentList.Add($arg) }
+                } else {
+                    $psi.Arguments = Join-ArgumentsForProcess -ArgumentList $currentArgs
+                }
+                $p = [System.Diagnostics.Process]::Start($psi)
+                $p.WaitForExit()
+                $exitCode = $p.ExitCode
+                $exitInfo = Get-WingetExitCodeInfo -exitCode $exitCode
+                Write-Log "Exit $exitCode $(Format-WingetExitCodeHex $exitCode) | $($exitInfo.Category) | $($exitInfo.Description)" -Tag "Info"
+
+                if ($exitInfo.Category -ne "RetryBusy") { break }
+
+                $inProgressCount++
+            } while ($inProgressCount -le $maxInProgressRetries)
+
+            # Still RetryBusy after max waits; exit 0 so Intune can retry later
+            if ($exitInfo.Category -eq "RetryBusy") {
+                Write-Log "RetryBusy (max waits); exit 0 for retry" -Tag "Error"
+                Complete-Script -ExitCode 0
             }
 
-            $runLabel = "Install ($attemptLabel)"
-            if ($inProgressCount -gt 0) { $runLabel += " [RetryBusy $inProgressCount/$maxInProgressRetries]" }
-            Write-Log "$runLabel" -Tag "Run"
-            Write-Log "winget $($currentArgs -join ' ')" -Tag "Debug"
-
-            # Use ProcessStartInfo so --override is passed as exactly one argument.
-            # PowerShell's & splatting can split args with spaces; winget fails with
-            # "An argument was provided that can only be used for single package".
-            # Ref: https://github.com/microsoft/winget-cli/issues/1317, https://github.com/microsoft/winget-cli/issues/5240
-            $psi = [System.Diagnostics.ProcessStartInfo]::new()
-            $psi.FileName = $wingetExe
-            $psi.UseShellExecute = $false
-            $psi.CreateNoWindow = $true
-            if ($psi.PSObject.Properties['ArgumentList']) {
-                foreach ($arg in $currentArgs) { [void]$psi.ArgumentList.Add($arg) }
-            } else {
-                $psi.Arguments = Join-ArgumentsForProcess -ArgumentList $currentArgs
+            # --- Success ---
+            if ($exitCode -eq 0 -or $exitInfo.Category -eq "Success") {
+                if ($triedNoScope -or $triedSource) {
+                    Write-Log "Install OK ($attemptLabel)" -Tag "Success"
+                } else {
+                    Write-Log "Install OK" -Tag "Success"
+                }
+                Complete-Script -ExitCode 0
             }
-            $p = [System.Diagnostics.Process]::Start($psi)
-            $p.WaitForExit()
-            $exitCode = $p.ExitCode
-            $exitInfo = Get-WingetExitCodeInfo -exitCode $exitCode
-            Write-Log "Exit $exitCode $(Format-WingetExitCodeHex $exitCode) | $($exitInfo.Category) | $($exitInfo.Description)" -Tag "Info"
 
-            if ($exitInfo.Category -ne "RetryBusy") { break }
-
-            $inProgressCount++
-        } while ($inProgressCount -le $maxInProgressRetries)
-
-        # Still RetryBusy after max waits; exit 0 so Intune can retry later
-        if ($exitInfo.Category -eq "RetryBusy") {
-            Write-Log "RetryBusy (max waits); exit 0 for retry" -Tag "Error"
-            Complete-Script -ExitCode 0
-        }
-
-        # --- Success ---
-        if ($exitCode -eq 0 -or $exitInfo.Category -eq "Success") {
-            if ($triedNoScope -or $triedSource) {
-                Write-Log "Install OK ($attemptLabel)" -Tag "Success"
-            } else {
-                Write-Log "Install OK" -Tag "Success"
+            # --- RetryLater (transient); exit 0 so Intune can retry later ---
+            if ($exitInfo.Category -eq "RetryLater") {
+                Write-Log "Defer: $($exitInfo.Description); exit 0" -Tag "Info"
+                Complete-Script -ExitCode 0
             }
-            Complete-Script -ExitCode 0
-        }
 
-        # --- RetryLater (transient); exit 0 so Intune can retry later ---
-        if ($exitInfo.Category -eq "RetryLater") {
-            Write-Log "Defer: $($exitInfo.Description); exit 0" -Tag "Info"
-            Complete-Script -ExitCode 0
+            # --- Unknown: bounded wait/retry (same delay as RetryBusy); then fall through to workarounds/Fail ---
+            if ($exitInfo.Category -eq "Unknown" -and $unknownRetryCount -lt $maxUnknownRetries) {
+                $unknownRetryCount++
+                Write-Log "Unknown exit; wait ${unknownDelaySeconds}s (retry $unknownRetryCount/$maxUnknownRetries)" -Tag "Info"
+                Start-Sleep -Seconds $unknownDelaySeconds
+                continue unknownRetryLoop
+            }
+
+            break
         }
 
         # --- Apply known workarounds ---
