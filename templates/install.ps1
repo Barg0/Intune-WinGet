@@ -325,7 +325,6 @@ try {
     # separate capped wait/retry loop ($maxUnknownRetries) before failing.
     $defaultScope      = if ($isUserContext) { 'user' } else { 'machine' }
     $useScope          = $true
-    $useSource         = $true
     $triedNoScope      = $false
 
     # Used only for Category RetryBusy (default: INSTALL_IN_PROGRESS).
@@ -341,18 +340,16 @@ try {
     }
 
     while ($true) {
-        $currentArgs = @('install', '-e', '--id', $wingetAppId, '--silent', '--skip-dependencies',
-                         '--accept-package-agreements', '--accept-source-agreements', '--force')
-        if ($useScope)  { $currentArgs += '--scope', $defaultScope }
-        if ($useSource) { $currentArgs += '--source', 'winget'  }
+        $currentArgs = @('install', '-e', '--id', $wingetAppId, '--silent', '--disable-interactivity',
+                         '--skip-dependencies', '--accept-package-agreements', '--accept-source-agreements', '--force')
+        if ($useScope) { $currentArgs += '--scope', $defaultScope }
+        $currentArgs += '--source', 'winget'
         if (-not [string]::IsNullOrWhiteSpace($installOverride)) {
             $currentArgs += '--override'
             $currentArgs += $installOverride
         }
 
-        $scopeLabel  = if ($useScope)  { "scope $defaultScope" } else { "no scope" }
-        $sourceLabel = if ($useSource) { ", source winget" } else { "" }
-        $attemptLabel = "$scopeLabel$sourceLabel"
+        $attemptLabel = if ($useScope) { "scope $defaultScope" } else { "no scope" }
 
         $unknownRetryCount = 0
         :unknownRetryLoop while ($true) {
